@@ -70,15 +70,25 @@ def low_light(image: Image.Image, face_width: float) -> Image.Image:
     return Image.fromarray(np.clip(noisy, 0, 255).astype(np.uint8))
 
 
+def video_frame(image: Image.Image, face_width: float) -> Image.Image:
+    """A small face in a compressed, moving video frame."""
+    return jpeg(motion_blur(low_resolution(24)(image, face_width), 24), face_width)
+
+
 DEGRADATIONS: dict[str, Degradation | None] = {
     "original": None,
     "face 32px": low_resolution(32),
     "face 20px": low_resolution(20),
+    "face 14px": low_resolution(14),
     "blur": blur,
     "motion blur": motion_blur,
     "jpeg q10": jpeg,
     "low light": low_light,
+    "video frame (24px, motion blur, JPEG)": video_frame,
 }
+
+# Immich's default maximum cosine distance for two faces to be the same person
+IMMICH_MAX_DISTANCE = 0.5
 
 
 @dataclass
@@ -131,15 +141,17 @@ def largest_face(faces: FaceDetectionOutput) -> FaceDetectionOutput | None:
 
 
 def verification_metrics(similarities: NDArray[np.float32], same: NDArray[np.bool_]) -> dict[str, float]:
-    order = np.argsort(-similarities)
-    labels = same[order]
-    true_positive_rate = np.concatenate([[0], np.cumsum(labels) / labels.sum()])
-    false_positive_rate = np.concatenate([[0], np.cumsum(~labels) / (~labels).sum()])
-    auc = float(np.trapezoid(true_positive_rate, false_positive_rate))
-    accuracy = (np.cumsum(labels) + (~labels).sum() - np.cumsum(~labels)) / len(labels)
-    eer_index = int(np.argmin(np.abs(false_positive_rate - (1 - true_positive_rate))))
-    eer = float((false_positive_rate[eer_index] + 1 - true_positive_rate[eer_index]) / 2)
-    return {"auc": auc, "accuracy": float(accuracy.max()), "eer": eer}
+    genuine, impostor = similarities[same], similarities[~same]
+    # how far apart the two similarity distributions are, in standard deviations; unlike accuracy it keeps
+    # telling models apart when all of them separate a small set perfectly
+    dprime = float((genuine.mean() - impostor.mean()) / np.sqrt((genuine.var() + impostor.var()) / 2))
+    threshold = np.quantile(impostor, 0.999)
+    return {
+        "dprime": dprime,
+        "tar": float((genuine > threshold).mean()),
+        "immich_tar": float((genuine >= 1 - IMMICH_MAX_DISTANCE).mean()),
+        "immich_far": float((impostor >= 1 - IMMICH_MAX_DISTANCE).mean()),
+    }
 
 
 def benchmark_recognition(
@@ -156,7 +168,9 @@ def benchmark_recognition(
     recognizers = [model for model in models if model.recognizer is not None]
     yield f"## Recognition\n\n{len(rows)} pairs ({same.sum()} same person) of {len(names)} images, faces found by "
     yield f"`{reference.name}`" + (f"; no face in {', '.join(missing)}" if missing else "") + ".\n\n"
-    yield "ROC AUC / best accuracy / equal error rate. Higher, higher, lower is better.\n\n"
+    yield "Each cell: d′ (separation of same/different person similarities, higher is better) · same-person pairs "
+    yield "matched at a 0.1% false match rate · at Immich's default threshold (cosine distance ≤ "
+    yield f"{IMMICH_MAX_DISTANCE}): same-person pairs matched / different-person pairs wrongly matched.\n\n"
     yield "| Degradation of the 2nd image | " + " | ".join(model.name for model in recognizers) + " |\n"
     yield "|---|" + "---|" * len(recognizers) + "\n"
     results: dict[str, list[str]] = {label: [] for label in DEGRADATIONS}
@@ -172,7 +186,8 @@ def benchmark_recognition(
                 }
             similarities = [float(clean[row["file_x"]] @ degraded[row["file_y"]]) for row in rows]
             metrics = verification_metrics(np.asarray(similarities, dtype=np.float32), same)
-            results[label].append(f"{metrics['auc']:.4f} / {metrics['accuracy']:.1%} / {metrics['eer']:.1%}")
+            immich = f"{metrics['immich_tar']:.0%} / {metrics['immich_far']:.1%}"
+            results[label].append(f"{metrics['dprime']:.2f} · {metrics['tar']:.0%} · {immich}")
     for label, cells in results.items():
         yield f"| {label} | " + " | ".join(cells) + " |\n"
     yield "\n"
@@ -213,7 +228,9 @@ def consensus(boxes: list[NDArray[np.float32]], threshold: float = 0.4) -> NDArr
     return np.asarray(agreed, dtype=np.float32).reshape(-1, 4)
 
 
-def benchmark_detection(models: list[Model], groups: Path, min_score: float, scales: list[float]) -> Iterator[str]:
+def benchmark_detection(
+    models: list[Model], groups: Path, min_score: float, scales: list[float], voters: list[str] | None = None
+) -> Iterator[str]:
     counts_file = groups / "counts.json"
     counts: dict[str, int] = json.loads(counts_file.read_text()) if counts_file.is_file() else {}
     detectors = [model for model in models if model.detector is not None]
@@ -232,7 +249,7 @@ def benchmark_detection(models: list[Model], groups: Path, min_score: float, sca
             scaled = image.resize((round(image.width * scale), round(image.height * scale)))
             for model in detectors:
                 found[scale, model.name] = model.detect(scaled, min_score)["boxes"] / scale
-        reference = consensus([found[1.0, model.name] for model in detectors])
+        reference = consensus([found[1.0, model.name] for model in detectors if not voters or model.name in voters])
         reference_total += len(reference)
         cells = []
         for s, scale in enumerate(scales):
@@ -266,6 +283,11 @@ def main() -> None:
     parser.add_argument("--reference-detector", help="model whose detector finds the faces for recognition")
     parser.add_argument("--groups", type=Path, help="directory of group photos for detection")
     parser.add_argument("--scales", default="1,0.5,0.25", help="sizes to detect the group photos at")
+    parser.add_argument(
+        "--reference-models",
+        help="comma-separated detectors whose agreement makes the detection reference (default: all); "
+        "leave out variants of the same network, as they always agree",
+    )
     parser.add_argument("--min-score", type=float, default=0.7, help="minimum detection score, as in Immich")
     parser.add_argument("--output", type=Path, help="write the report here as well")
     args = parser.parse_args()
@@ -278,7 +300,8 @@ def main() -> None:
         report += benchmark_recognition(models, reference, args.pairs, args.images, args.min_score)
     if args.groups is not None:
         scales = [float(scale) for scale in args.scales.split(",")]
-        report += benchmark_detection(models, args.groups, args.min_score, scales)
+        voters = args.reference_models.split(",") if args.reference_models else None
+        report += benchmark_detection(models, args.groups, args.min_score, scales, voters)
     report += speed(models)
 
     text = "".join(report)
