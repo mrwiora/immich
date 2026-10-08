@@ -1,3 +1,5 @@
+import re
+
 from immich_ml.config import clean_name
 from immich_ml.schemas import ModelSource
 
@@ -164,6 +166,9 @@ WEBLATE_TO_FLORES200 = {
 }
 
 
+_HUGGINGFACE_REPO = re.compile(r"[\w.-]+/[\w.-]+")
+
+
 def get_model_source(model_name: str) -> ModelSource | None:
     cleaned_name = clean_name(model_name)
 
@@ -178,5 +183,8 @@ def get_model_source(model_name: str) -> ModelSource | None:
 
     if cleaned_name in _PADDLE_MODELS:
         return ModelSource.PADDLE
+
+    if _HUGGINGFACE_REPO.fullmatch(model_name):
+        return ModelSource.HUGGINGFACE
 
     return None

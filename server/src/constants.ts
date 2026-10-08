@@ -64,6 +64,8 @@ export const excludePaths = ['/.well-known/immich', '/custom.css', '/favicon.ico
 
 export const FACE_THUMBNAIL_SIZE = 250;
 
+export const FACIAL_RECOGNITION_MODELS = ['antelopev2', 'buffalo_l', 'buffalo_m', 'buffalo_s'];
+
 type ModelInfo = { dimSize: number };
 export const CLIP_MODEL_INFO: Record<string, ModelInfo> = {
   RN101__openai: { dimSize: 512 },

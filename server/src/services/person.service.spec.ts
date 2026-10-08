@@ -1,5 +1,6 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
+import { SystemConfig, defaults } from 'src/dtos/config.dto.js';
 import { PeopleUsersUpsertType, PersonUserRole, mapFaces, mapPerson } from 'src/dtos/person.dto.js';
 import { AssetFileType, CacheControl, JobName, JobStatus, SourceType, SystemMetadataKey } from 'src/enum.js';
 import { PersonService } from 'src/services/person.service.js';
@@ -28,6 +29,13 @@ import { ServiceMocks, makeStream, newTestService } from 'test/utils.js';
 
 const PERSON_READ_ROLES = [PersonUserRole.Read, PersonUserRole.Write, PersonUserRole.Admin];
 const PERSON_WRITE_ROLES = [PersonUserRole.Write, PersonUserRole.Admin];
+
+const withFacialRecognition = (facialRecognition: Partial<SystemConfig['machineLearning']['facialRecognition']>) => ({
+  newConfig: {
+    machineLearning: { facialRecognition: { ...defaults.machineLearning.facialRecognition, ...facialRecognition } },
+  } as SystemConfig,
+  oldConfig: defaults,
+});
 
 describe(PersonService.name, () => {
   let sut: PersonService;
@@ -1075,6 +1083,38 @@ describe(PersonService.name, () => {
       expect(mocks.storage.unlink).toHaveBeenCalledWith(person.thumbnailPath);
       expect(mocks.database.vacuum).toHaveBeenCalledWith({ analyze: true, table: 'asset_face' });
       expect(mocks.database.vacuum).toHaveBeenCalledWith({ analyze: true, table: 'person' });
+    });
+  });
+
+  describe('onConfigValidate', () => {
+    it('should allow the built-in models', () => {
+      expect(() =>
+        sut.onConfigValidate(withFacialRecognition({ modelName: 'antelopev2', detectionModelName: 'buffalo_s' })),
+      ).not.toThrow();
+    });
+
+    it('should allow a model prefixed with the organization', () => {
+      expect(() => sut.onConfigValidate(withFacialRecognition({ modelName: 'immich-app/buffalo_l' }))).not.toThrow();
+    });
+
+    it('should allow a Hugging Face repository', () => {
+      expect(() =>
+        sut.onConfigValidate(
+          withFacialRecognition({ modelName: 'someone/adaface_ir101', detectionModelName: 'someone/scrfd_34g' }),
+        ),
+      ).not.toThrow();
+    });
+
+    it('should fail for an unknown recognition model', () => {
+      expect(() => sut.onConfigValidate(withFacialRecognition({ modelName: 'buffalo_xl' }))).toThrow(
+        'Unknown facial recognition model: buffalo_xl',
+      );
+    });
+
+    it('should fail for an unknown detection model', () => {
+      expect(() => sut.onConfigValidate(withFacialRecognition({ detectionModelName: 'not a model' }))).toThrow(
+        'Unknown facial recognition model: not a model',
+      );
     });
   });
 

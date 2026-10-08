@@ -190,22 +190,29 @@
 
           <hr />
 
-          <SettingSelect
+          <SettingInputField
+            inputType={SettingInputFieldType.TEXT}
             label={$t('admin.machine_learning_facial_recognition_model')}
-            desc={$t('admin.machine_learning_facial_recognition_model_description')}
-            name="facial-recognition-model"
+            description={$t('admin.machine_learning_facial_recognition_model_description')}
             bind:value={configToEdit.machineLearning.facialRecognition.modelName}
-            options={[
-              { value: 'antelopev2', text: 'antelopev2' },
-              { value: 'buffalo_l', text: 'buffalo_l' },
-              { value: 'buffalo_m', text: 'buffalo_m' },
-              { value: 'buffalo_s', text: 'buffalo_s' },
-            ]}
+            required={true}
             disabled={disabled ||
               !configToEdit.machineLearning.enabled ||
               !configToEdit.machineLearning.facialRecognition.enabled}
             isEdited={configToEdit.machineLearning.facialRecognition.modelName !==
               config.machineLearning.facialRecognition.modelName}
+          />
+
+          <SettingInputField
+            inputType={SettingInputFieldType.TEXT}
+            label={$t('admin.machine_learning_face_detection_model')}
+            description={$t('admin.machine_learning_face_detection_model_description')}
+            bind:value={configToEdit.machineLearning.facialRecognition.detectionModelName}
+            disabled={disabled ||
+              !configToEdit.machineLearning.enabled ||
+              !configToEdit.machineLearning.facialRecognition.enabled}
+            isEdited={configToEdit.machineLearning.facialRecognition.detectionModelName !==
+              config.machineLearning.facialRecognition.detectionModelName}
           />
 
           <SettingInputField

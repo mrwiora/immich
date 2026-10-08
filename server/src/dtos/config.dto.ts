@@ -242,6 +242,9 @@ const AdminConfigSchemaWithVisibility = z
             .min(1)
             .describe('Minimum number of faces required for recognition')
             .meta({ visibility: User }),
+          detectionModelName: z
+            .string()
+            .describe('Name of the face detection model to use (empty = same as the facial recognition model)'),
         }).meta({ id: 'AdminConfigFacialRecognitionDto' }),
         ocr: AdminConfigMachineLearningModelSchema.extend({
           maxResolution: z.int().min(1).describe('Maximum resolution for OCR processing'),
@@ -638,6 +641,7 @@ export const defaults = Object.freeze<SystemConfig>({
       minScore: 0.7,
       maxDistance: 0.5,
       minFaces: 3,
+      detectionModelName: '',
     },
     ocr: {
       enabled: true,

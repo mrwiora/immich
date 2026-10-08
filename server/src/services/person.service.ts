@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Insertable } from 'kysely';
 import { isUndefined, omitBy } from 'lodash-es';
+import type { ArgOf } from 'src/repositories/event.repository.js';
 import type { JobItem, JobOf } from 'src/types.js';
-import { Chunked, OnJob } from 'src/decorators.js';
+import { Chunked, OnEvent, OnJob } from 'src/decorators.js';
 import { BulkIdErrorReason, BulkIdResponseDto } from 'src/dtos/asset-ids.response.dto.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
 import {
@@ -52,13 +53,31 @@ import { getDimensions, getMyPartnerIds } from 'src/utils/asset.util.js';
 import { ImmichFileResponse } from 'src/utils/file.js';
 import { isHttpException } from 'src/utils/logger.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
-import { batched, findOrFail, hasSomeDefined, isFacialRecognitionEnabled } from 'src/utils/misc.js';
+import {
+  batched,
+  findOrFail,
+  hasSomeDefined,
+  isFacialRecognitionEnabled,
+  isFacialRecognitionModelSupported,
+} from 'src/utils/misc.js';
 import { Point, transformPoints } from 'src/utils/transform.js';
 
 const personKey = ({ ownerId, personGroupId }: PersonId) => `${ownerId}/${personGroupId}`;
 
 @Injectable()
 export class PersonService extends BaseService {
+  @OnEvent({ name: 'ConfigValidate' })
+  onConfigValidate({ newConfig }: ArgOf<'ConfigValidate'>) {
+    const { modelName, detectionModelName } = newConfig.machineLearning.facialRecognition;
+    for (const name of detectionModelName ? [modelName, detectionModelName] : [modelName]) {
+      if (!isFacialRecognitionModelSupported(name)) {
+        throw new Error(
+          `Unknown facial recognition model: ${name}. Use one of the built-in models or the full name of a Hugging Face repository (owner/repository).`,
+        );
+      }
+    }
+  }
+
   async getAll(auth: AuthDto, dto: PersonSearchDto): Promise<PeopleResponseDto> {
     const { withHidden = false, closestAssetId, closestPersonId, page, size, ...filters } = dto;
     let closestFaceAssetId = closestAssetId;

@@ -24,7 +24,7 @@ from ._ops import ALIGNED_SIZE, align_face
 class FaceRecognizer(InferenceModel[FaceRecognitionOptions]):
     depends = [(ModelType.DETECTION, ModelTask.FACIAL_RECOGNITION)]
     identity = (ModelType.RECOGNITION, ModelTask.FACIAL_RECOGNITION)
-    sources = (ModelSource.INSIGHTFACE,)
+    sources = (ModelSource.INSIGHTFACE, ModelSource.HUGGINGFACE)
 
     def __init__(self, model_name: str, **model_kwargs: Any) -> None:
         super().__init__(model_name, **model_kwargs)

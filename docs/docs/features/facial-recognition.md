@@ -77,6 +77,14 @@ You can learn how the tune the result in this [Guide](/guides/better-facial-clus
 
 There are a few different models available; the default is typically considered the best. On more constrained systems where the default is too intensive, you can choose a smaller model instead.
 
+The built-in models are, from largest to smallest, `antelopev2`, `buffalo_l` (default), `buffalo_m` and `buffalo_s`. You can also enter the full name of any Hugging Face repository (`owner/repository`) that contains a model in the same format as Immich's models: `detection/model.onnx` and `recognition/model.onnx`. Such models are currently expected to work like the built-in ones: an SCRFD-style detector and an ArcFace-style recognizer with 512-dimensional embeddings.
+
+Embeddings from different recognition models can't be compared with each other, so you need to re-run face detection for all assets after changing this setting.
+
+### Face detection model
+
+By default, faces are found with the detection model that comes with the facial recognition model. Setting a separate face detection model lets you combine, for example, the small and fast `buffalo_s` detector with the `antelopev2` recognizer. It accepts the same names as the facial recognition model. Changing it only affects new face detection jobs.
+
 ### Minimum detection score
 
 This setting affects whether a result from the face detection model is filtered out as a false positive. It may seem tempting to set this low to detect more faces, but it can lead to false positives that are difficult to deal with and can harm facial recognition. It is strongly recommended not to go below 0.5 for this setting. Setting it to a very high number like 0.9 is also not recommended: the default is already biased toward precision, so a threshold that high leads to many undetected faces.

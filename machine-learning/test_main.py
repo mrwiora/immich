@@ -42,6 +42,7 @@ from immich_ml.models.base import InferenceEntry, InferenceModel
 from immich_ml.models.cache import ModelCache
 from immich_ml.models.clip.textual import MClipTextualEncoder, OpenClipTextualEncoder
 from immich_ml.models.clip.visual import OpenClipVisualEncoder
+from immich_ml.models.constants import get_model_source
 from immich_ml.models.facial_recognition.detection import FaceDetector
 from immich_ml.models.facial_recognition.recognition import FaceRecognizer
 from immich_ml.models.ocr.ctc import logits, probabilities
@@ -235,6 +236,40 @@ class TestBase:
             local_dir=encoder.cache_dir,
             ignore_patterns=["*.armnn", "*.rknn"],
         )
+
+    @pytest.mark.parametrize(
+        ("model_name", "source"),
+        [
+            ("buffalo_l", ModelSource.INSIGHTFACE),
+            ("immich-app/buffalo_l", ModelSource.INSIGHTFACE),
+            ("ViT-B-32__openai", ModelSource.OPENCLIP),
+            ("someone/adaface_ir101", ModelSource.HUGGINGFACE),
+            ("some-one/scrfd.34g", ModelSource.HUGGINGFACE),
+            ("adaface_ir101", None),
+            ("someone/adaface ir101", None),
+            ("a/b/c", None),
+        ],
+    )
+    def test_gets_model_source(self, model_name: str, source: ModelSource | None) -> None:
+        assert get_model_source(model_name) == source
+
+    def test_downloads_from_any_huggingface_repository(self, snapshot_download: mock.Mock) -> None:
+        recognizer = FaceRecognizer("someone/adaface_ir101", cache_dir="/path/to/cache")
+        recognizer.download()
+
+        snapshot_download.assert_called_once_with(
+            "someone/adaface_ir101",
+            revision="main",
+            cache_dir=recognizer.cache_dir,
+            local_dir=recognizer.cache_dir,
+            ignore_patterns=["*.armnn", "*.rknn"],
+        )
+
+    def test_caches_a_huggingface_repository_by_its_full_name(self) -> None:
+        recognizer = FaceRecognizer("someone/adaface_ir101")
+
+        assert recognizer.model_name == "someone--adaface_ir101"
+        assert recognizer.cache_dir == Path(settings.cache_folder) / "facial-recognition" / "someone--adaface_ir101"
 
     def test_download_downloads_armnn_if_preferred_format(self, snapshot_download: mock.Mock) -> None:
         encoder = OpenClipTextualEncoder("ViT-B-32__openai", model_format=ModelFormat.ARMNN)
@@ -1941,6 +1976,14 @@ class TestCache:
     async def test_refuses_a_model_its_slot_does_not_run(self) -> None:
         with pytest.raises(ValueError):
             InferenceEntry(OpenClipVisualEncoder, "buffalo_l", VisualOptions())
+
+    async def test_runs_a_face_model_from_any_huggingface_repository(self) -> None:
+        InferenceEntry(FaceDetector, "someone/scrfd_34g", FaceDetectionOptions())
+        InferenceEntry(FaceRecognizer, "someone/adaface_ir101", FaceRecognitionOptions())
+
+    async def test_refuses_a_huggingface_repository_for_other_tasks(self) -> None:
+        with pytest.raises(ValueError):
+            InferenceEntry(OpenClipVisualEncoder, "someone/clip", VisualOptions())
 
     async def test_refuses_an_unknown_model_name(self) -> None:
         with pytest.raises(ValueError):

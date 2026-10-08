@@ -44,6 +44,7 @@ class ModelSource(StrEnum):
     MCLIP = "mclip"
     OPENCLIP = "openclip"
     PADDLE = "paddle"
+    HUGGINGFACE = "huggingface"  # any repository in Immich's model layout, named by its full id
 
 
 class ModelOrganization(StrEnum):

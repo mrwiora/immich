@@ -13,7 +13,7 @@ from ._ops import decode_scrfd, nms
 class FaceDetector(InferenceModel[FaceDetectionOptions]):
     depends = []
     identity = (ModelType.DETECTION, ModelTask.FACIAL_RECOGNITION)
-    sources = (ModelSource.INSIGHTFACE,)
+    sources = (ModelSource.INSIGHTFACE, ModelSource.HUGGINGFACE)
     shape_policy = ShapePolicy(dims=(Shape(batch=1, height=DET_SIZE, width=DET_SIZE),))
 
     def _predict(self, inputs: NDArray[np.uint8] | bytes, options: FaceDetectionOptions) -> FaceDetectionOutput:

@@ -45,7 +45,13 @@ class InferenceModel[O: Options](ABC):
         self.loaded = session is not None
         self.load_attempts = 0
         self._load_lock = Lock()
-        self.model_name = clean_name(model_name)
+        if get_model_source(model_name) == ModelSource.HUGGINGFACE:
+            # a repository outside of Immich's organization, which has no revisions of Immich's own
+            self.repo_id, self.revision = model_name, "main"
+            self.model_name = clean_name(model_name.replace("/", "--"))
+        else:
+            self.model_name = clean_name(model_name)
+            self.repo_id, self.revision = f"{settings.model_organization}/{self.model_name}", settings.model_revision
         self.cache_dir = Path(cache_dir) if cache_dir is not None else self._cache_dir_default
         self.model_format = model_format if model_format is not None else self._model_format_default
         if session is not None:
@@ -66,8 +72,8 @@ class InferenceModel[O: Options](ABC):
         model_type = self.model_type.replace("-", " ")
         log.info(f"Downloading {model_type} model '{self.model_name}' to {self.model_dir}. This may take a while.")
         snapshot_download(
-            f"{settings.model_organization}/{self.model_name}",
-            revision=settings.model_revision,
+            self.repo_id,
+            revision=self.revision,
             cache_dir=self.cache_dir,
             local_dir=self.cache_dir,
             ignore_patterns=_IGNORED_PATTERNS.get(self.model_format, []),
@@ -167,7 +173,7 @@ class InferenceModel[O: Options](ABC):
     @property
     def _cache_dir_default(self) -> Path:
         cache_dir = settings.cache_folder / self.model_task.value / self.model_name
-        return cache_dir if settings.legacy_models else cache_dir / settings.model_revision
+        return cache_dir if self.revision == "main" else cache_dir / self.revision
 
     @property
     def cached(self) -> bool:

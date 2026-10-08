@@ -137,6 +137,7 @@ The default configuration looks like this:
     },
     "enabled": true,
     "facialRecognition": {
+      "detectionModelName": "",
       "enabled": true,
       "maxDistance": 0.5,
       "minFaces": 3,

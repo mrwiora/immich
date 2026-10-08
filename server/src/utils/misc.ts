@@ -12,7 +12,13 @@ import { cleanupOpenApiDoc } from 'nestjs-zod';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import picomatch from 'picomatch';
-import { CLIP_MODEL_INFO, JOBS_ASSET_PAGINATION_SIZE, endpointTags, serverVersion } from 'src/constants.js';
+import {
+  CLIP_MODEL_INFO,
+  FACIAL_RECOGNITION_MODELS,
+  JOBS_ASSET_PAGINATION_SIZE,
+  endpointTags,
+  serverVersion,
+} from 'src/constants.js';
 import { extraModels } from 'src/decorators.js';
 import { SystemConfig } from 'src/dtos/config.dto.js';
 import { ApiCustomExtension, ImmichCookie, ImmichHeader, MetadataKey } from 'src/enum.js';
@@ -161,6 +167,12 @@ export function getCLIPModelInfo(modelName: string) {
 
   return modelInfo;
 }
+
+/**
+ * Facial recognition models are either built in or loaded from any Hugging Face repository by its full name
+ */
+export const isFacialRecognitionModelSupported = (modelName: string) =>
+  FACIAL_RECOGNITION_MODELS.includes(cleanModelName(modelName)) || /^[\w.-]+\/[\w.-]+$/.test(modelName);
 
 function sortKeys<T>(target: T): T {
   if (!target || typeof target !== 'object' || Array.isArray(target)) {

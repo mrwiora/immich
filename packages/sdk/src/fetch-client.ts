@@ -218,6 +218,8 @@ export type AdminConfigDuplicateDetectionDto = {
     maxDistance: number;
 };
 export type AdminConfigFacialRecognitionDto = {
+    /** Name of the face detection model to use (empty = same as the facial recognition model) */
+    detectionModelName: string;
     /** Whether the task is enabled */
     enabled: boolean;
     /** Maximum distance threshold for face recognition */

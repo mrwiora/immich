@@ -30,7 +30,7 @@ export type ModelPayload = { imagePath: string } | { text: string };
 
 type ModelOptions = { modelName: string };
 
-export type FaceDetectionOptions = ModelOptions & { minScore: number };
+export type FaceDetectionOptions = ModelOptions & { detectionModelName: string; minScore: number };
 export type OcrOptions = ModelOptions & {
   minDetectionScore: number;
   minRecognitionScore: number;
@@ -187,10 +187,10 @@ export class MachineLearningRepository {
     throw new Error(`Machine learning request '${JSON.stringify(config)}' failed for all URLs`);
   }
 
-  async detectFaces(imagePath: string, { modelName, minScore }: FaceDetectionOptions) {
+  async detectFaces(imagePath: string, { modelName, detectionModelName, minScore }: FaceDetectionOptions) {
     const request = {
       [ModelTask.FACIAL_RECOGNITION]: {
-        [ModelType.DETECTION]: { modelName, options: { minScore } },
+        [ModelType.DETECTION]: { modelName: detectionModelName || modelName, options: { minScore } },
         [ModelType.RECOGNITION]: { modelName },
       },
     };

@@ -1,6 +1,6 @@
 # Plan: freely configurable face detection & recognition models
 
-Status: **in progress** on branch `claude/configurable-face-models` (step 1). Independent of video
+Status: **in progress** on branch `claude/configurable-face-models`: step 1 done, step 2 next. Independent of video
 frame sampling for face detection (`machineLearning.facialRecognition.videoFrameInterval`, branch
 `claude/happy-hawking-kwd97p`), but most useful together with it.
 
@@ -43,24 +43,22 @@ before shipping it.
 
 ## Steps
 
-### 1. Make models configurable (no new architectures yet)
+### 1. Make models configurable (no new architectures yet) — done
 
-- Split the config into independent parts. Keep `modelName` and migrate it to both new names
-  (system config migration):
-  ```ts
-  facialRecognition: {
-    detection: { modelName: 'buffalo_l', inputSize: 640, minScore: 0.7 },
-    recognition: { modelName: 'buffalo_l' },
-    ...
-  }
-  ```
-- Server: send the two model names separately in the `/predict` request. The request format
-  already has separate `detection` and `recognition` entries
-  (`server/src/repositories/machine-learning.repository.ts`).
-- ML: let `FaceRecognizer.depends` work with a detector from a different pack. Read `inputSize`
-  from the request options instead of `FACE_DETECTION_SIZE`.
-- Web: replace the fixed dropdown with a free-text field that suggests known names. The CLIP model
-  setting already allows any name.
+- `facialRecognition.detectionModelName` (empty = the detector of `modelName`), a flat field
+  instead of a nested object, so no config migration is needed and existing clients keep working.
+  The server sends both names in the `/predict` request, which already had separate `detection`
+  and `recognition` entries.
+- Both names accept the built-in packs or the full id of any Hugging Face repository
+  (`owner/repository`). The server rejects anything else in `ConfigValidate`.
+- ML: `ModelSource.HUGGINGFACE` for `owner/repository` names (face models only). They are downloaded
+  from that repository at `main` and cached under `owner--repository`. The repository must use
+  Immich's layout (`detection/model.onnx`, `recognition/model.onnx`); ARM NN/RKNN fall back to ONNX
+  when missing.
+- Web: free-text fields for both models instead of the fixed dropdown.
+- **Moved to step 2:** a configurable detector `inputSize`. `FACE_DETECTION_SIZE` comes from the
+  `immich-model` package, and the accelerated backends (RKNN, ARM NN) compile fixed shapes, so the
+  input size belongs in the per-model descriptor.
 
 ### 2. Model descriptors instead of hard-coded preprocessing
 
@@ -76,6 +74,7 @@ before shipping it.
   ```
   For detectors: `family: scrfd | retinaface | yolo-face | yunet`, `strides`, `anchors`,
   `keypoints: 5`.
+- Detectors also declare their `input.size`, which replaces the fixed `FACE_DETECTION_SIZE`.
 - Pick decoders by `family` (`decode_scrfd`, `decode_retinaface`, `decode_yolo`). Recognition
   families share `align_face` and differ only in normalization and color order.
 - Allow models from any Hugging Face repo, or a local directory mounted into the ML container, as

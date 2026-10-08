@@ -18832,6 +18832,10 @@
       },
       "AdminConfigFacialRecognitionDto": {
         "properties": {
+          "detectionModelName": {
+            "description": "Name of the face detection model to use (empty = same as the facial recognition model)",
+            "type": "string"
+          },
           "enabled": {
             "description": "Whether the task is enabled",
             "type": "boolean"
@@ -18862,6 +18866,7 @@
           }
         },
         "required": [
+          "detectionModelName",
           "enabled",
           "maxDistance",
           "minFaces",
