@@ -1,6 +1,6 @@
 # Plan: freely configurable face detection & recognition models
 
-Status: **in progress** on branch `claude/configurable-face-models`: steps 1 and 2 done, step 3/4 next. Independent of video
+Status: **in progress** on branch `claude/configurable-face-models`: steps 1 and 2 done, step 4 started. Independent of video
 frame sampling for face detection (`machineLearning.facialRecognition.videoFrameInterval`, branch
 `claude/happy-hawking-kwd97p`), but most useful together with it.
 
@@ -94,9 +94,20 @@ before shipping it.
 - If `embedding_size` ≠ 512: recreate `face_search` with the new `vector(n)` size and rebuild the
   index, following the CLIP dimension-change handling in `SearchRepository` / `DatabaseRepository`.
 
-### 4. Evaluation harness (to answer "how much better")
+### 4. Evaluation harness (to answer "how much better") — first version done
 
-Do this offline so the live library isn't touched.
+Done: `machine-learning/scripts/face_benchmark.py` runs models in the repository layout through the
+real `FaceDetector`/`FaceRecognizer` classes:
+
+- recognition: verification of labeled pairs (ROC AUC, best accuracy, equal error rate) on clean
+  images and with the second image degraded (face 32/20 px, blur, motion blur, JPEG q10, low light)
+- detection: faces found in group photos at full size and downscaled, against the faces at least
+  two detectors agree on, plus hand counts
+- speed per image/face on the current CPU
+
+First results are in `plans/face-model-benchmark.md`. The public datasets below could not be
+downloaded from the development environment (Hugging Face, Google Drive, figshare and Kaggle are
+blocked there), so they are still open:
 
 - `machine-learning/scripts/face_benchmark.py`:
   - **Detection:** WIDER FACE val (AP easy/medium/hard), plus recall at the configured `minScore`.

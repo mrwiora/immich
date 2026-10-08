@@ -38,7 +38,7 @@ Face detection sends the generated preview image to the machine learning service
 
 A custom model can be any ONNX face detector or recognizer that works like one of the supported families:
 
-- **Detection:** SCRFD (InsightFace, the default) or YOLO pose-style face models with 5 keypoints, such as YOLOv8-face and YOLO11-face exported in the Ultralytics format (one output of `[cx, cy, w, h, score, 5 × (x, y, visibility)]` per candidate).
+- **Detection:** SCRFD (InsightFace, the default) or YOLO pose-style face models with 5 keypoints, such as YOLOv8-face and YOLO11-face. Both common YOLO exports work: the Ultralytics format (one output of `[cx, cy, w, h, score, 5 × (x, y, visibility)]` per candidate) and the raw format of the yolov8-face project (one feature map per stride).
 - **Recognition:** models that take a face aligned to the 5-point ArcFace template, such as ArcFace, AdaFace or EdgeFace, and output a 512-dimensional embedding.
 
 If a model differs from the defaults, put a `model.json` next to its `model.onnx`. Only the fields that differ are needed:
@@ -60,7 +60,7 @@ For example, a YOLO detector: `{"family": "yolo"}`.
 
 `mean` and `std` only apply to models that take float input. Immich's own models take the raw 8-bit image and normalize it inside the model.
 
-The `scripts/face_model_repo.py` script in the machine learning service packages ONNX models into this layout, writes the `model.json` and can try the result on an image before you upload it with `hf upload <owner>/<repository> <directory>`.
+See the [custom face models guide](/guides/custom-face-models) for models that are known to work and how to compare them. The `scripts/face_model_repo.py` script in the machine learning service packages ONNX models into this layout, writes the `model.json` and can try the result on an image before you upload it with `hf upload <owner>/<repository> <directory>`.
 
 ## How Facial Recognition Works
 

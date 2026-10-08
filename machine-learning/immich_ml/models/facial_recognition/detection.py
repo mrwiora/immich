@@ -52,7 +52,7 @@ class FaceDetector(InferenceModel[FaceDetectionOptions]):
 
         heads = [widen(head) for head in session.run(None, {session.get_inputs()[0].name: blob})]
         if spec.family == "yolo":
-            scores, boxes, kps = decode_yolo(heads)
+            scores, boxes, kps = decode_yolo(heads, spec.strides)
         else:
             scores, boxes, kps = decode_scrfd(heads, spec.input_size, spec.strides, spec.anchors_per_cell)
 

@@ -1460,6 +1460,22 @@ def make_yolo_output(detections: list[tuple[float, float, float]], candidates: i
     return output
 
 
+def make_yolo_maps(detections: list[tuple[int, int, float]], size: int = 640) -> list[np.ndarray]:
+    """The three raw feature maps of a YOLOv8-face export: per cell 4 x 16 distribution-focal box bins, a score
+    logit and 5 x (x, y, visibility) keypoints. Each detection (cell_x, cell_y, logit) sits on the stride-8 map with
+    every box side at a distance of 2 cells and keypoints offset by i / 2 cells, so they decode to (cell + i) * 8."""
+    maps = [np.zeros((1, 80, size // stride, size // stride), dtype=np.float32) for stride in (8, 16, 32)]
+    for map_ in maps:
+        map_[0, 64] = -20  # no face anywhere else
+    for cell_x, cell_y, logit in detections:
+        bins = np.full((4, 16), -20, dtype=np.float32)
+        bins[:, 2] = 20  # all weight on bin 2
+        maps[0][0, :64, cell_y, cell_x] = bins.ravel()
+        maps[0][0, 64, cell_y, cell_x] = logit
+        maps[0][0, 65:, cell_y, cell_x] = np.ravel([[i / 2, i / 2, 1] for i in range(5)])
+    return maps
+
+
 def expected_landmarks(cell_x: int, cell_y: int) -> np.ndarray:
     cx, cy = cell_x * 8, cell_y * 8
     return (np.tile([cx, cy], 5) + np.arange(10) * 8).reshape(5, 2).astype(np.float32)
@@ -1635,6 +1651,31 @@ class TestFaceRecognition:
         assert scores[0, 0] == pytest.approx(0.9)
         assert boxes[0, 0].tolist() == [90, 195, 110, 205]
         assert kps[0, 0].tolist() == [100, 200, 101, 201, 102, 202, 103, 203, 104, 204]
+
+    def test_decodes_raw_yolo_feature_maps(self) -> None:
+        scores, boxes, kps = decode_yolo(make_yolo_maps([(10, 20, 2.0)]))
+
+        assert scores.shape == (1, 80 * 80 + 40 * 40 + 20 * 20)
+        index = 20 * 80 + 10
+        assert scores[0, index] == pytest.approx(1 / (1 + np.exp(-2.0)))
+        assert np.allclose(boxes[0, index], [(10.5 - 2) * 8, (20.5 - 2) * 8, (10.5 + 2) * 8, (20.5 + 2) * 8], atol=1e-3)
+        assert np.allclose(kps[0, index], np.ravel([[(10 + i) * 8, (20 + i) * 8] for i in range(5)]))
+        assert (np.delete(scores[0], index) < 1e-6).all()
+
+    def test_refuses_raw_yolo_maps_for_other_strides(self) -> None:
+        with pytest.raises(ValueError):
+            decode_yolo(make_yolo_maps([]), strides=(8, 16))
+
+    def test_detection_with_raw_yolo_maps(self, stub_session: Callable[..., mock.Mock], mocker: MockerFixture) -> None:
+        mocker.patch.object(FaceDetector, "load")
+        face_detector = FaceDetector("someone/yolov8n-face", cache_dir="test_cache")
+        face_detector.configure(DetectorSpec(family="yolo"))
+        face_detector.session = stub_session((1, 3, 640, 640), outputs=make_yolo_maps([(10, 20, 2.0), (50, 50, -2.0)]))
+
+        faces = face_detector.predict(Image.new("RGB", (640, 640)), options=FaceDetectionOptions(min_score=0.7))
+
+        assert np.allclose(faces["boxes"], [[68, 148, 100, 180]])
+        assert faces["landmarks"].shape == (1, 5, 2)
 
     def test_refuses_a_yolo_model_without_face_keypoints(self) -> None:
         with pytest.raises(ValueError):

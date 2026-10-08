@@ -55,12 +55,17 @@ def decode_scrfd(
 
 
 def decode_yolo(
-    heads: list[NDArray[np.float32]],
+    heads: list[NDArray[np.float32]], strides: tuple[int, ...] = DET_STRIDES
 ) -> tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32]]:
     """
-    Decodes a YOLO pose-style face model (e.g. YOLOv8-face, YOLO11-face) in the Ultralytics export layout:
-    one output of [cx, cy, w, h, score, 5 x (x, y, visibility)] per candidate, channels first or last.
+    Decodes a YOLO pose-style face model with 5 keypoints (e.g. YOLOv8-face, YOLO11-face) in either export layout:
+    - Ultralytics: one output of [cx, cy, w, h, score, 5 x (x, y, visibility)] per candidate, channels first or last
+    - raw: one (1, 4 * reg_max + 1 + 15, H, W) feature map per stride, with distribution-focal box offsets
+      and a score logit, as exported by the yolov8-face project
     """
+    if len(heads) > 1:
+        return _decode_yolo_maps(heads, strides)
+
     output = ensure_dims(heads[0], 3)[0]
     if output.shape[0] < output.shape[1]:  # channels first, as there are far more candidates than channels
         output = output.T
@@ -71,6 +76,39 @@ def decode_yolo(
     boxes = np.concatenate([centers - sizes, centers + sizes], axis=1)
     kps = output[:, 5:].reshape(-1, 5, 3)[:, :, :2].reshape(-1, 10)
     return output[None, :, 4], boxes[None], kps[None]
+
+
+def _decode_yolo_maps(
+    heads: list[NDArray[np.float32]], strides: tuple[int, ...]
+) -> tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32]]:
+    if len(heads) != len(strides):
+        raise ValueError(f"Expected one YOLO feature map per stride {strides}, got {len(heads)}")
+
+    scores, boxes, kps = [], [], []
+    for head, stride in zip(heads, strides):
+        channels, height, width = ensure_dims(head, 4)[0].shape
+        reg_max = (channels - 16) // 4
+        if channels != 4 * reg_max + 16:
+            raise ValueError(f"Expected 4 * reg_max + 16 channels per YOLO feature map, got {channels}")
+        pred = head.reshape(channels, -1).T
+        ys, xs = np.mgrid[:height, :width]
+        grid = np.stack([xs.ravel(), ys.ravel()], axis=1).astype(np.float32)
+
+        # each side of the box is the expectation over reg_max bins
+        logits = pred[:, : 4 * reg_max].reshape(-1, 4, reg_max)
+        weights = np.exp(logits - logits.max(axis=-1, keepdims=True))
+        distance = (weights / weights.sum(axis=-1, keepdims=True)) @ np.arange(reg_max, dtype=np.float32)
+        centers = grid + 0.5
+        boxes.append(np.concatenate([centers - distance[:, :2], centers + distance[:, 2:]], axis=1) * stride)
+        scores.append(1 / (1 + np.exp(-pred[:, 4 * reg_max])))
+        points = pred[:, 4 * reg_max + 1 :].reshape(-1, 5, 3)[:, :, :2]
+        kps.append(((points * 2 + grid[:, None]) * stride).reshape(-1, 10))
+
+    return (
+        np.concatenate(scores, dtype=np.float32)[None],
+        np.concatenate(boxes, dtype=np.float32)[None],
+        np.concatenate(kps, dtype=np.float32)[None],
+    )
 
 
 def nms(boxes: NDArray[np.float32], scores: NDArray[np.float32], threshold: float = 0.4) -> NDArray[np.intp]:
