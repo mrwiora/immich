@@ -489,11 +489,7 @@ export class ThumbnailConfig extends BaseConfig {
   }
 
   getBaseInputOptions(videoStream: VideoStreamInfo, format?: VideoFormat): string[] {
-    // skip_frame nointra skips all frames for some MPEG-TS files. Look at ffmpeg tickets 7950 and 7895 for more details.
-    const options =
-      format?.formatName === 'mpegts'
-        ? ['-sws_flags', 'accurate_rnd+full_chroma_int']
-        : ['-skip_frame', 'nointra', '-sws_flags', 'accurate_rnd+full_chroma_int'];
+    const options = [...this.getFrameSkipOptions(format), '-sws_flags', 'accurate_rnd+full_chroma_int'];
 
     const metadataOverrides = [];
     if (videoStream.colorPrimaries === ColorPrimaries.Reserved) {
@@ -516,19 +512,27 @@ export class ThumbnailConfig extends BaseConfig {
     return options;
   }
 
+  getFrameSkipOptions(format?: VideoFormat): string[] {
+    // skip_frame nointra skips all frames for some MPEG-TS files. Look at ffmpeg tickets 7950 and 7895 for more details.
+    return format?.formatName === 'mpegts' ? [] : ['-skip_frame', 'nointra'];
+  }
+
   getBaseOutputOptions() {
     return ['-fps_mode', 'vfr', '-frames:v', '1', '-update', '1'];
   }
 
-  getFilterOptions(videoStream: VideoStreamInfo): string[] {
+  getFrameSelectionFilters(): string[] {
     return [
       'fps=12:start_time=0:eof_action=pass:round=down',
       'thumbnail=12',
       String.raw`select=gt(scene\,0.1)-eq(prev_selected_n\,n)+isnan(prev_selected_n)+gt(n\,20)`,
       'trim=end_frame=2',
       'reverse',
-      ...super.getFilterOptions(videoStream),
     ];
+  }
+
+  getFilterOptions(videoStream: VideoStreamInfo): string[] {
+    return [...this.getFrameSelectionFilters(), ...super.getFilterOptions(videoStream)];
   }
 
   getPresetOptions() {
@@ -545,6 +549,49 @@ export class ThumbnailConfig extends BaseConfig {
 
   getScaling(videoStream: VideoStreamInfo) {
     return super.getScaling(videoStream) + ':flags=lanczos+accurate_rnd+full_chroma_int:out_range=pc';
+  }
+}
+
+/**
+ * Splits a video into equally sized sections of at most `interval` percent of its duration
+ * and returns the position of the middle of each section in milliseconds,
+ * so that the samples cover the whole video
+ */
+export const getVideoFrameTimestamps = (duration: number, interval: number): number[] => {
+  if (duration <= 0 || interval <= 0) {
+    return [];
+  }
+
+  const count = Math.ceil(100 / Math.min(interval, 100));
+  return Array.from({ length: count }, (_, index) => Math.floor(((index + 0.5) / count) * duration));
+};
+
+/**
+ * Extracts the exact frame at a given position of a video as a JPEG written to a stream
+ */
+export class VideoFrameConfig extends ThumbnailConfig {
+  static create(config: ConfigFFmpegDto): VideoFrameConfig {
+    return new VideoFrameConfig(config);
+  }
+
+  getFrameCommand(videoStream: VideoStreamInfo, timestamp: number, format?: VideoFormat): TranscodeCommand {
+    const command = this.getCommand(TranscodeTarget.Video, videoStream, undefined, format);
+    // seeking before the input is fast and frame-accurate since it decodes from the previous keyframe
+    command.inputOptions.unshift('-ss', (timestamp / 1000).toFixed(3));
+    return command;
+  }
+
+  getFrameSkipOptions(): string[] {
+    // every frame needs to be decoded to land on the requested position
+    return [];
+  }
+
+  getBaseOutputOptions() {
+    return ['-frames:v', '1', '-f', 'image2pipe', '-c:v', 'mjpeg', '-q:v', '2'];
+  }
+
+  getFrameSelectionFilters(): string[] {
+    return [];
   }
 }
 

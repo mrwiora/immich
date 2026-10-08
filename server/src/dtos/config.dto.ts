@@ -242,6 +242,13 @@ const AdminConfigSchemaWithVisibility = z
             .min(1)
             .describe('Minimum number of faces required for recognition')
             .meta({ visibility: User }),
+          videoFrameInterval: z
+            .int()
+            .min(0)
+            .max(100)
+            .describe(
+              'Distance between sampled video frames for face detection, as a percentage of the video duration (0 = only use the preview frame)',
+            ),
         }).meta({ id: 'AdminConfigFacialRecognitionDto' }),
         ocr: AdminConfigMachineLearningModelSchema.extend({
           maxResolution: z.int().min(1).describe('Maximum resolution for OCR processing'),
@@ -638,6 +645,7 @@ export const defaults = Object.freeze<SystemConfig>({
       minScore: 0.7,
       maxDistance: 0.5,
       minFaces: 3,
+      videoFrameInterval: 0,
     },
     ocr: {
       enabled: true,

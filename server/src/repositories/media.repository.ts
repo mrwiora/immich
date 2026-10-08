@@ -5,7 +5,7 @@ import { camelCase, upperFirst } from 'lodash-es';
 import { Duration } from 'luxon';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
-import { Writable } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import sharp, { Sharp } from 'sharp';
 import type {
   Bitmap,
@@ -430,6 +430,21 @@ export class MediaRepository {
         })
         .run();
     });
+  }
+
+  async extractVideoFrame(input: string, options: TranscodeCommand): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    const output = new PassThrough();
+    output.on('data', (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+    await this.transcode(input, output, options);
+    const frame = Buffer.concat(chunks);
+    if (frame.length === 0) {
+      throw new Error(`Could not extract a video frame from ${input}`);
+    }
+
+    return frame;
   }
 
   async getImageMetadata(input: string | Buffer): Promise<ImageDimensions & { isTransparent: boolean }> {

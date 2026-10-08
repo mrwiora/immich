@@ -1,6 +1,6 @@
 import { AssetTypeEnum, type AssetFaceResponseDto } from '@immich/sdk';
 import type { Faces } from '$lib/managers/asset-viewer-manager.svelte';
-import { getAssetMediaUrl } from '$lib/utils';
+import { getAssetMediaUrl, getAssetPlaybackUrl } from '$lib/utils';
 import { mapNormalizedRectToContent, type Rect, type Size } from '$lib/utils/container-utils';
 
 export type BoundingBox = Rect & { id: string; labelWidth: number };
@@ -21,49 +21,77 @@ export const getBoundingBox = (faces: Faces[], imageSize: Size): BoundingBox[] =
   return boxes;
 };
 
+const loadVideoFrame = async (assetId: string, timestamp: number): Promise<HTMLVideoElement | undefined> => {
+  const video = document.createElement('video');
+
+  const seeked = await new Promise<boolean>((resolve) => {
+    video.addEventListener(
+      'loadedmetadata',
+      () => {
+        video.currentTime = timestamp / 1000;
+      },
+      { once: true },
+    );
+    video.addEventListener('seeked', () => resolve(true), { once: true });
+    video.addEventListener('error', () => resolve(false), { once: true });
+    video.src = getAssetPlaybackUrl({ id: assetId });
+  });
+
+  return seeked ? video : undefined;
+};
+
+const loadImage = async (src: string) => {
+  const image = new Image();
+  image.src = src;
+
+  await new Promise<void>((resolve) => {
+    image.addEventListener('load', () => resolve());
+    image.addEventListener('error', () => resolve());
+  });
+
+  return image;
+};
+
 export const zoomImageToBase64 = async (
   face: AssetFaceResponseDto,
   assetId: string,
   assetType: AssetTypeEnum,
   photoViewer: HTMLImageElement | undefined,
 ): Promise<string | null> => {
-  let image: HTMLImageElement | undefined;
-  if (assetType === AssetTypeEnum.Image) {
-    image = photoViewer;
-  } else if (assetType === AssetTypeEnum.Video) {
-    const data = getAssetMediaUrl({ id: assetId });
-    const img: HTMLImageElement = new Image();
-    img.src = data;
+  let source: { element: CanvasImageSource; width: number; height: number } | undefined;
+  if (assetType === AssetTypeEnum.Video && face.frameTimestamp !== null && face.frameTimestamp !== undefined) {
+    // the face was detected in a frame of the video instead of its preview
+    const video = await loadVideoFrame(assetId, face.frameTimestamp);
+    if (video) {
+      source = { element: video, width: video.videoWidth, height: video.videoHeight };
+    }
+  } else {
+    let image: HTMLImageElement | undefined;
+    if (assetType === AssetTypeEnum.Image) {
+      image = photoViewer;
+    } else if (assetType === AssetTypeEnum.Video) {
+      image = await loadImage(getAssetMediaUrl({ id: assetId }));
+    }
 
-    await new Promise<void>((resolve) => {
-      img.addEventListener('load', () => resolve());
-      img.addEventListener('error', () => resolve());
-    });
-
-    image = img;
+    if (image) {
+      source = { element: await loadImage(image.src), width: image.naturalWidth, height: image.naturalHeight };
+    }
   }
-  if (!image) {
+
+  if (!source) {
     return null;
   }
   const { boundingBoxX1: x1, boundingBoxX2: x2, boundingBoxY1: y1, boundingBoxY2: y2, imageWidth, imageHeight } = face;
 
   const coordinates = {
-    x1: (image.naturalWidth / imageWidth) * x1,
-    x2: (image.naturalWidth / imageWidth) * x2,
-    y1: (image.naturalHeight / imageHeight) * y1,
-    y2: (image.naturalHeight / imageHeight) * y2,
+    x1: (source.width / imageWidth) * x1,
+    x2: (source.width / imageWidth) * x2,
+    y1: (source.height / imageHeight) * y1,
+    y2: (source.height / imageHeight) * y2,
   };
 
   const faceWidth = coordinates.x2 - coordinates.x1;
   const faceHeight = coordinates.y2 - coordinates.y1;
-
-  const faceImage = new Image();
-  faceImage.src = image.src;
-
-  await new Promise((resolve) => {
-    faceImage.addEventListener('load', resolve);
-    faceImage.addEventListener('error', () => resolve(null));
-  });
 
   const canvas = document.createElement('canvas');
   canvas.width = faceWidth;
@@ -73,6 +101,6 @@ export const zoomImageToBase64 = async (
   if (!context) {
     return null;
   }
-  context.drawImage(faceImage, coordinates.x1, coordinates.y1, faceWidth, faceHeight, 0, 0, faceWidth, faceHeight);
+  context.drawImage(source.element, coordinates.x1, coordinates.y1, faceWidth, faceHeight, 0, 0, faceWidth, faceHeight);
   return canvas.toDataURL();
 };

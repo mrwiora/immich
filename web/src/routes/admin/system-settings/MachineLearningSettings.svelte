@@ -251,6 +251,21 @@
             isEdited={configToEdit.machineLearning.facialRecognition.minFaces !==
               config.machineLearning.facialRecognition.minFaces}
           />
+
+          <SettingInputField
+            inputType={SettingInputFieldType.NUMBER}
+            label={$t('admin.machine_learning_video_frame_interval')}
+            description={$t('admin.machine_learning_video_frame_interval_description')}
+            bind:value={configToEdit.machineLearning.facialRecognition.videoFrameInterval}
+            step="1"
+            min={0}
+            max={100}
+            disabled={disabled ||
+              !configToEdit.machineLearning.enabled ||
+              !configToEdit.machineLearning.facialRecognition.enabled}
+            isEdited={configToEdit.machineLearning.facialRecognition.videoFrameInterval !==
+              config.machineLearning.facialRecognition.videoFrameInterval}
+          />
         </div>
       </SettingAccordion>
 

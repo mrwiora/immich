@@ -64,6 +64,7 @@ const createFace = (params: Partial<AssetFace> = {}): AssetFace => ({
   boundingBoxY2: 200,
   imageWidth: 1000,
   imageHeight: 1000,
+  frameTimestamp: null,
   personGroupId: null,
   sourceType: SourceType.MachineLearning,
   person: null,

@@ -128,6 +128,7 @@ const updatedConfig = Object.freeze<SystemConfig>({
       minScore: 0.7,
       maxDistance: 0.5,
       minFaces: 3,
+      videoFrameInterval: 0,
     },
     ocr: {
       enabled: true,

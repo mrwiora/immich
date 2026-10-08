@@ -40,7 +40,7 @@ import { BoundingBox } from 'src/repositories/machine-learning.repository.js';
 import { BaseService } from 'src/services/base.service.js';
 import { getAssetFile, getDimensions } from 'src/utils/asset.util.js';
 import { checkFaceVisibility, checkOcrVisibility } from 'src/utils/editor.js';
-import { BaseConfig, ThumbnailConfig } from 'src/utils/media.js';
+import { BaseConfig, ThumbnailConfig, VideoFrameConfig } from 'src/utils/media.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
 import { batched, clamp } from 'src/utils/misc.js';
 import { getOutputDimensions } from 'src/utils/transform.js';
@@ -393,7 +393,7 @@ export class MediaService extends BaseService {
     ownerId,
     personGroupId,
   }: JobOf<JobName.PersonGenerateThumbnail>): Promise<JobStatus> {
-    const { image } = await this.getConfig({ withCache: true });
+    const { ffmpeg, image } = await this.getConfig({ withCache: true });
     const data = await this.personRepository.getDataForThumbnailGenerationJob({ ownerId, personGroupId });
     if (!data) {
       this.logger.error(`Could not generate person thumbnail for ${personGroupId}: missing data`);
@@ -402,7 +402,12 @@ export class MediaService extends BaseService {
 
     const { x1, y1, x2, y2, oldWidth, oldHeight, exifOrientation, previewPath, originalPath } = data;
     let inputImage: string | Buffer;
-    if (data.type === AssetType.Video) {
+    if (data.type === AssetType.Video && data.frameTimestamp !== null && data.videoStream) {
+      // the face was detected in a sampled frame instead of the preview, so the same frame needs to be extracted again
+      const frameConfig = VideoFrameConfig.create({ ...ffmpeg, targetResolution: image.preview.size.toString() });
+      const command = frameConfig.getFrameCommand(data.videoStream, data.frameTimestamp, data.format ?? undefined);
+      inputImage = await this.mediaRepository.extractVideoFrame(originalPath, command);
+    } else if (data.type === AssetType.Video) {
       if (!previewPath) {
         this.logger.error(`Could not generate person thumbnail for video ${personGroupId}: missing preview path`);
         return JobStatus.Failed;
@@ -419,7 +424,11 @@ export class MediaService extends BaseService {
       colorspace: image.colorspace,
       processInvalidImages: process.env.IMMICH_PROCESS_INVALID_IMAGES === 'true',
       // if this is an extracted image, it may not have orientation metadata
-      orientation: Buffer.isBuffer(inputImage) && exifOrientation ? Number(exifOrientation) : undefined,
+      // video frames are already rotated by ffmpeg
+      orientation:
+        Buffer.isBuffer(inputImage) && data.type !== AssetType.Video && exifOrientation
+          ? Number(exifOrientation)
+          : undefined,
     });
 
     const thumbnailPath = StorageCore.getPersonThumbnailPath({ ownerId, personGroupId });
