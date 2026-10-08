@@ -34,6 +34,34 @@ It can be found from the app bar when you access the detail view of a person.
 
 Face detection sends the generated preview image to the machine learning service for processing. The service checks if it has the relevant model downloaded and downloads it if not. The image is decoded, pre-processed and passed to the face detection model (with hardware acceleration if configured). The bounding boxes and scores outputted from this model are used to crop and preprocess the image once again to be passed to a facial recognition model (also accelerated if configured). The embeddings from the recognition model, together with the bounding boxes and scores from the face detection model, are then sent back to the server to be added to the database. The embeddings in particular are indexed so they can be searched quickly during facial recognition clustering.
 
+### Custom models
+
+A custom model can be any ONNX face detector or recognizer that works like one of the supported families:
+
+- **Detection:** SCRFD (InsightFace, the default) or YOLO pose-style face models with 5 keypoints, such as YOLOv8-face and YOLO11-face exported in the Ultralytics format (one output of `[cx, cy, w, h, score, 5 × (x, y, visibility)]` per candidate).
+- **Recognition:** models that take a face aligned to the 5-point ArcFace template, such as ArcFace, AdaFace or EdgeFace, and output a 512-dimensional embedding.
+
+If a model differs from the defaults, put a `model.json` next to its `model.onnx`. Only the fields that differ are needed:
+
+| Model       | Field              | Default                           | Meaning                                                         |
+| ----------- | ------------------ | --------------------------------- | --------------------------------------------------------------- |
+| Detection   | `family`           | `scrfd`                           | `scrfd` or `yolo`                                               |
+| Detection   | `input_size`       | `640`                             | Size of the square input; a multiple of the largest stride (32) |
+| Detection   | `mean`, `std`      | `127.5`, `128` (YOLO: `0`, `255`) | Pixels are passed as `(value - mean) / std`                     |
+| Detection   | `channels`         | `rgb`                             | `rgb` or `bgr`                                                  |
+| Detection   | `nms_threshold`    | `0.4`                             | Overlap at which duplicate detections are merged                |
+| Detection   | `strides`          | `[8, 16, 32]`                     | SCRFD: feature map strides of the outputs                       |
+| Detection   | `anchors_per_cell` | `2`                               | SCRFD: anchors per feature map cell                             |
+| Recognition | `input_size`       | `112`                             | Size of the aligned face crop                                   |
+| Recognition | `mean`, `std`      | `127.5`, `127.5`                  | Pixels are passed as `(value - mean) / std`                     |
+| Recognition | `channels`         | `rgb`                             | `rgb` or `bgr` (AdaFace models use `bgr`)                       |
+
+For example, a YOLO detector: `{"family": "yolo"}`.
+
+`mean` and `std` only apply to models that take float input. Immich's own models take the raw 8-bit image and normalize it inside the model.
+
+The `scripts/face_model_repo.py` script in the machine learning service packages ONNX models into this layout, writes the `model.json` and can try the result on an image before you upload it with `hf upload <owner>/<repository> <directory>`.
+
 ## How Facial Recognition Works
 
 The facial recognition algorithm we use is derived from [DBSCAN](https://www.youtube.com/watch?v=RDZUdRSDOok), a popular clustering algorithm. It essentially treats each detected face as a point in a graph and aims to group points that are close to each other.
@@ -77,7 +105,7 @@ You can learn how the tune the result in this [Guide](/guides/better-facial-clus
 
 There are a few different models available; the default is typically considered the best. On more constrained systems where the default is too intensive, you can choose a smaller model instead.
 
-The built-in models are, from largest to smallest, `antelopev2`, `buffalo_l` (default), `buffalo_m` and `buffalo_s`. You can also enter the full name of any Hugging Face repository (`owner/repository`) that contains a model in the same format as Immich's models: `detection/model.onnx` and `recognition/model.onnx`. Such models are currently expected to work like the built-in ones: an SCRFD-style detector and an ArcFace-style recognizer with 512-dimensional embeddings.
+The built-in models are, from largest to smallest, `antelopev2`, `buffalo_l` (default), `buffalo_m` and `buffalo_s`. You can also enter the full name of any Hugging Face repository (`owner/repository`) that contains `detection/model.onnx` and/or `recognition/model.onnx`. See [Custom models](#custom-models) below.
 
 Embeddings from different recognition models can't be compared with each other, so you need to re-run face detection for all assets after changing this setting.
 

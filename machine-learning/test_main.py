@@ -43,8 +43,10 @@ from immich_ml.models.cache import ModelCache
 from immich_ml.models.clip.textual import MClipTextualEncoder, OpenClipTextualEncoder
 from immich_ml.models.clip.visual import OpenClipVisualEncoder
 from immich_ml.models.constants import get_model_source
+from immich_ml.models.facial_recognition._ops import decode_yolo
 from immich_ml.models.facial_recognition.detection import FaceDetector
 from immich_ml.models.facial_recognition.recognition import FaceRecognizer
+from immich_ml.models.facial_recognition.spec import DetectorSpec, RecognizerSpec, read_spec
 from immich_ml.models.ocr.ctc import logits, probabilities
 from immich_ml.models.ocr.detection import TextDetector
 from immich_ml.models.ocr.recognition import TextRecognizer
@@ -1385,8 +1387,8 @@ class TestCLIP:
         assert np.allclose(tokens["attention_mask"], np.array([mock_attention_mask], dtype=np.int32), atol=0)
 
 
-def make_scrfd_heads(detections: list[tuple[int, int, float]]) -> list[np.ndarray]:
-    """Build the 9 head tensors a SCRFD keypoint model emits at 640x640.
+def make_scrfd_heads(detections: list[tuple[int, int, float]], size: int = 640) -> list[np.ndarray]:
+    """Build the 9 head tensors a SCRFD keypoint model emits at size x size (640 by default).
 
     `detections` is a list of (cell_x, cell_y, score) placed on the stride-8 level.
     Distances and keypoint offsets are fixed so the decoded geometry is known by
@@ -1395,12 +1397,12 @@ def make_scrfd_heads(detections: list[tuple[int, int, float]]) -> list[np.ndarra
         kps  = [cx, cy] + [0, 1, 2, ... 9] * 8, reshaped to 5 points
     """
     heads: list[np.ndarray] = []
-    counts = [(640 // stride) ** 2 * 2 for stride in (8, 16, 32)]
+    counts = [(size // stride) ** 2 * 2 for stride in (8, 16, 32)]
     for channels in (1, 4, 10):
         for n in counts:
             heads.append(np.zeros((n, channels), dtype=np.float32))
     for cell_x, cell_y, score in detections:
-        i = 2 * (cell_y * 80 + cell_x)  # anchor-major, 2 anchors per cell
+        i = 2 * (cell_y * (size // 8) + cell_x)  # anchor-major, 2 anchors per cell
         heads[0][i] = score
         heads[3][i] = [1, 2, 3, 4]
         heads[6][i] = np.arange(10)
@@ -1446,6 +1448,16 @@ def ort_sessions(
     threads: int = 2,
 ) -> OrtSession:
     return OrtSession(model_path, shape_policy, providers=providers, threads=threads)
+
+
+def make_yolo_output(detections: list[tuple[float, float, float]], candidates: int = 8400) -> np.ndarray:
+    """One Ultralytics-style YOLO face output, channels first: a 20 x 10-pixel box centered on (cx, cy)
+    with the keypoints at (cx + i, cy + i)."""
+    output = np.zeros((1, 20, candidates), dtype=np.float32)
+    for i, (cx, cy, score) in enumerate(detections):
+        output[0, :5, i] = [cx, cy, 20, 10, score]
+        output[0, 5:, i] = np.ravel([[cx + k, cy + k, 0.9] for k in range(5)])
+    return output
 
 
 def expected_landmarks(cell_x: int, cell_y: int) -> np.ndarray:
@@ -1513,6 +1525,161 @@ class TestFaceRecognition:
 
         assert faces["boxes"].tolist() == [[v / 2 for v in expected_box(10, 10)]]
         assert np.allclose(faces["landmarks"][0], expected_landmarks(10, 10) / 2)
+
+    def test_reads_no_descriptor_as_the_defaults(self, tmp_path: Path) -> None:
+        assert read_spec(tmp_path, DetectorSpec) == DetectorSpec()
+        assert read_spec(tmp_path, RecognizerSpec) == RecognizerSpec()
+
+    def test_reads_a_descriptor(self, tmp_path: Path) -> None:
+        (tmp_path / "model.json").write_text('{"family": "yolo", "input_size": 320, "channels": "bgr"}')
+
+        spec = read_spec(tmp_path, DetectorSpec)
+
+        assert spec == DetectorSpec(family="yolo", input_size=320, channels="bgr")
+        assert spec.normalization == (0.0, 255.0)
+
+    def test_refuses_a_descriptor_with_unknown_fields(self, tmp_path: Path) -> None:
+        (tmp_path / "model.json").write_text('{"input_size": 112, "embedding_dim": 512}')
+
+        with pytest.raises(ValueError):
+            read_spec(tmp_path, RecognizerSpec)
+
+    def test_refuses_an_input_size_the_strides_do_not_divide(self, tmp_path: Path) -> None:
+        (tmp_path / "model.json").write_text('{"input_size": 500}')
+
+        with pytest.raises(ValueError, match="multiple of 32"):
+            read_spec(tmp_path, DetectorSpec)
+
+    def test_scrfd_normalization_defaults_to_insightface(self) -> None:
+        assert DetectorSpec().normalization == (127.5, 128.0)
+        assert DetectorSpec(mean=0.0).normalization == (0.0, 128.0)
+
+    def test_detector_is_shaped_by_the_descriptor_it_downloads(self, tmp_path: Path, mocker: MockerFixture) -> None:
+        mocker.patch.object(FaceDetector, "download")
+        make_session = mocker.patch.object(FaceDetector, "_make_session")
+        (tmp_path / "detection").mkdir()
+        (tmp_path / "detection" / "model.json").write_text('{"input_size": 320}')
+
+        face_detector = FaceDetector("someone/scrfd_320", cache_dir=tmp_path)
+        assert face_detector.shape_policy.dims == (Shape(batch=1, height=640, width=640),)
+        face_detector.load()
+
+        assert face_detector.spec.input_size == 320
+        assert face_detector.shape_policy.dims == (Shape(batch=1, height=320, width=320),)
+        make_session.assert_called_once()
+
+    def test_recognizer_reads_the_descriptor_it_downloads(self, tmp_path: Path, mocker: MockerFixture) -> None:
+        mocker.patch.object(FaceRecognizer, "download")
+        mocker.patch.object(FaceRecognizer, "_make_session")
+        (tmp_path / "recognition").mkdir()
+        (tmp_path / "recognition" / "model.json").write_text('{"channels": "bgr"}')
+
+        face_recognizer = FaceRecognizer("someone/adaface_ir101", cache_dir=tmp_path)
+        face_recognizer.load()
+
+        assert face_recognizer.spec == RecognizerSpec(channels="bgr")
+
+    def test_detection_at_another_input_size(
+        self, stub_session: Callable[..., mock.Mock], mocker: MockerFixture
+    ) -> None:
+        mocker.patch.object(FaceDetector, "load")
+        face_detector = FaceDetector("someone/scrfd_320", cache_dir="test_cache")
+        face_detector.configure(DetectorSpec(input_size=320))
+        session = stub_session((1, 3, 320, 320), outputs=make_scrfd_heads([(10, 10, 0.9)], size=320))
+        face_detector.session = session
+
+        # a 640px image is scaled down by half to fit the detector, and the boxes back up
+        faces = face_detector.predict(Image.new("RGB", (640, 640)), options=FaceDetectionOptions(min_score=0.7))
+
+        assert session.run.call_args.args[1]["input.1"].shape == (1, 3, 320, 320)
+        assert faces["boxes"].tolist() == [[2 * value for value in expected_box(10, 10)]]
+        assert np.allclose(faces["landmarks"][0], expected_landmarks(10, 10) * 2)
+
+    def test_detection_normalizes_as_the_descriptor_says(
+        self, stub_session: Callable[..., mock.Mock], mocker: MockerFixture
+    ) -> None:
+        mocker.patch.object(FaceDetector, "load")
+        face_detector = FaceDetector("someone/scrfd", cache_dir="test_cache")
+        face_detector.configure(DetectorSpec(mean=0.0, std=255.0, channels="bgr"))
+        session = stub_session((1, 3, 640, 640), outputs=make_scrfd_heads([]))
+        face_detector.session = session
+
+        face_detector.predict(Image.new("RGB", (640, 640), (255, 0, 0)), options=FaceDetectionOptions())
+
+        blob = session.run.call_args.args[1]["input.1"]
+        assert blob.dtype == np.float32
+        assert np.allclose(blob[0, :, 0, 0], [0.0, 0.0, 1.0])  # red, read back to front
+
+    def test_fused_detection_takes_the_channels_as_the_descriptor_says(
+        self, stub_session: Callable[..., mock.Mock], mocker: MockerFixture
+    ) -> None:
+        mocker.patch.object(FaceDetector, "load")
+        face_detector = FaceDetector("someone/scrfd", cache_dir="test_cache")
+        face_detector.configure(DetectorSpec(channels="bgr"))
+        session = stub_session((1, 640, 640, 3), outputs=make_scrfd_heads([]), normalizes_input=True)
+        face_detector.session = session
+
+        face_detector.predict(Image.new("RGB", (640, 640), (255, 0, 0)), options=FaceDetectionOptions())
+
+        blob = session.run.call_args.args[1]["input.1"]
+        assert blob.dtype == np.uint8
+        assert blob.flags["C_CONTIGUOUS"]
+        assert blob[0, 0, 0].tolist() == [0, 0, 255]
+
+    @pytest.mark.parametrize("channels_last", [False, True])
+    def test_decodes_yolo(self, channels_last: bool) -> None:
+        output = make_yolo_output([(100, 200, 0.9)])
+        scores, boxes, kps = decode_yolo([output.transpose(0, 2, 1) if channels_last else output])
+
+        assert scores.shape == (1, 8400)
+        assert scores[0, 0] == pytest.approx(0.9)
+        assert boxes[0, 0].tolist() == [90, 195, 110, 205]
+        assert kps[0, 0].tolist() == [100, 200, 101, 201, 102, 202, 103, 203, 104, 204]
+
+    def test_refuses_a_yolo_model_without_face_keypoints(self) -> None:
+        with pytest.raises(ValueError):
+            decode_yolo([np.zeros((1, 5, 8400), dtype=np.float32)])
+
+    def test_detection_with_yolo(self, stub_session: Callable[..., mock.Mock], mocker: MockerFixture) -> None:
+        mocker.patch.object(FaceDetector, "load")
+        face_detector = FaceDetector("someone/yolo11n-face", cache_dir="test_cache")
+        face_detector.configure(DetectorSpec(family="yolo"))
+        # two overlapping candidates of the same face and a separate one below the threshold
+        session = stub_session(
+            (1, 3, 640, 640), outputs=[make_yolo_output([(100, 200, 0.9), (101, 200, 0.8), (400, 400, 0.5)])]
+        )
+        face_detector.session = session
+
+        faces = face_detector.predict(Image.new("RGB", (640, 640), (255, 255, 255)), options=FaceDetectionOptions())
+
+        assert np.allclose(session.run.call_args.args[1]["input.1"], 1.0)  # 0-255 scaled to 0-1
+        assert faces["boxes"].tolist() == [[90, 195, 110, 205]]
+        assert np.allclose(faces["scores"], [0.9])
+        assert faces["landmarks"].shape == (1, 5, 2)
+
+    def test_recognition_as_the_descriptor_says(
+        self, stub_session: Callable[..., mock.Mock], mocker: MockerFixture
+    ) -> None:
+        mocker.patch.object(FaceRecognizer, "load")
+        face_recognizer = FaceRecognizer("someone/adaface_ir101", cache_dir="test_cache")
+        face_recognizer.spec = RecognizerSpec(input_size=128, mean=0.0, std=255.0, channels="bgr")
+        session = stub_session(("batch", 3, 128, 128), outputs=[np.ones((1, 512), dtype=np.float32)])
+        face_recognizer.session = session
+        arcface_dst = np.array(
+            [[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366], [41.5493, 92.3655], [70.7299, 92.2041]],
+            dtype=np.float32,
+        )
+        faces = {
+            "boxes": np.zeros((1, 4), dtype=np.float32),
+            "landmarks": (arcface_dst * 2 + [200, 300])[None].astype(np.float32),
+            "scores": np.array([0.9], dtype=np.float32),
+        }
+
+        face_recognizer.predict(Image.new("RGB", (600, 800), (255, 0, 0)), faces, options=FaceRecognitionOptions())
+
+        crops = session.run.call_args.args[1]["input.1"]
+        assert crops.shape == (1, 3, 128, 128)
+        assert np.allclose(crops[0, :, 64, 64], [0.0, 0.0, 1.0])  # red, read back to front
 
     def test_recognition(self, stub_session: Callable[..., mock.Mock], mocker: MockerFixture) -> None:
         mocker.patch.object(FaceRecognizer, "load")

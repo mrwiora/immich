@@ -195,6 +195,8 @@ def path() -> Iterator[mock.Mock]:
     path.is_file.return_value = True
     path.with_suffix.return_value = path
     path.return_value = path
+    # a model directory's optional descriptor (cache_dir / model_type / "model.json"), which says nothing
+    path.__truediv__.return_value.__truediv__.return_value.read_bytes.return_value = b"{}"
 
     with mock.patch("immich_ml.models.base.Path", return_value=path) as mocked:
         yield mocked

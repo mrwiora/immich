@@ -1,6 +1,6 @@
 # Plan: freely configurable face detection & recognition models
 
-Status: **in progress** on branch `claude/configurable-face-models`: step 1 done, step 2 next. Independent of video
+Status: **in progress** on branch `claude/configurable-face-models`: steps 1 and 2 done, step 3/4 next. Independent of video
 frame sampling for face detection (`machineLearning.facialRecognition.videoFrameInterval`, branch
 `claude/happy-hawking-kwd97p`), but most useful together with it.
 
@@ -60,25 +60,31 @@ before shipping it.
   `immich-model` package, and the accelerated backends (RKNN, ARM NN) compile fixed shapes, so the
   input size belongs in the per-model descriptor.
 
-### 2. Model descriptors instead of hard-coded preprocessing
+### 2. Model descriptors instead of hard-coded preprocessing — done
 
-- Ship a small `model.json` next to each ONNX file, for example:
-  ```json
-  {
-    "embedding_size": 512,
-    "family": "arcface",
-    "input": { "channels": "rgb", "mean": 127.5, "size": 112, "std": 127.5 },
-    "task": "facial-recognition",
-    "type": "recognition"
-  }
-  ```
-  For detectors: `family: scrfd | retinaface | yolo-face | yunet`, `strides`, `anchors`,
-  `keypoints: 5`.
-- Detectors also declare their `input.size`, which replaces the fixed `FACE_DETECTION_SIZE`.
-- Pick decoders by `family` (`decode_scrfd`, `decode_retinaface`, `decode_yolo`). Recognition
-  families share `align_face` and differ only in normalization and color order.
-- Allow models from any Hugging Face repo, or a local directory mounted into the ML container, as
-  long as a `model.json` is present. Fall back to today's built-in list for the existing names.
+- Optional `model.json` next to `detection/model.onnx` / `recognition/model.onnx`
+  (`immich_ml/models/facial_recognition/spec.py`). Flat, snake_case, only the fields that differ
+  from the defaults; the defaults are the contract of Immich's own models, so they need none.
+  Unknown fields are rejected.
+  - Detection: `family` (`scrfd` | `yolo`), `input_size` (multiple of the largest stride),
+    `mean`/`std` (default per family), `channels` (`rgb` | `bgr`), `nms_threshold`, and for
+    SCRFD `strides` and `anchors_per_cell`.
+  - Recognition: `input_size` (the ArcFace template is scaled to it), `mean`, `std`, `channels`.
+- The descriptor is read after the download and before the graph is built, so `input_size` also
+  shapes the ONNX Runtime session. It replaces the fixed `FACE_DETECTION_SIZE`.
+- Decoders: `decode_scrfd` (now parameterized) and a new `decode_yolo` for Ultralytics-style
+  pose exports with 5 keypoints (YOLOv8-face, YOLO11-face). RetinaFace and YuNet are not added
+  yet.
+- `scripts/face_model_repo.py` packages ONNX files into the repository layout, writes the
+  descriptor and can try the result on an image.
+- Verified with real models: the plain (float input) InsightFace `buffalo_sc` pack run through
+  this path with default settings gives the same boxes and embeddings (cosine 1.0) as the fused
+  form Immich publishes, and also works at `input_size` 320 and 480.
+- **Not verified yet:** a real YOLO face model (the unit tests use synthetic outputs; Hugging Face
+  was not reachable from the development environment). Our letterbox pads at the bottom right with
+  black, while Ultralytics centers with grey (114), which may cost a little accuracy.
+- Not done: `embedding_size` in the descriptor (see step 3) and local directories mounted into the
+  ML container (a local cache directory with the same layout already works).
 
 ### 3. Embedding size and switching models
 

@@ -11,6 +11,7 @@ from immich_ml.schemas import (
     FaceDetectionOutput,
     FaceRecognitionOptions,
     FacialRecognitionOutput,
+    ModelSession,
     ModelSource,
     ModelTask,
     ModelType,
@@ -18,7 +19,8 @@ from immich_ml.schemas import (
 )
 from immich_ml.sessions.policy import ShapePolicy, batches, runs
 
-from ._ops import ALIGNED_SIZE, align_face
+from ._ops import align_face
+from .spec import RecognizerSpec, read_spec
 
 
 class FaceRecognizer(InferenceModel[FaceRecognitionOptions]):
@@ -30,6 +32,11 @@ class FaceRecognizer(InferenceModel[FaceRecognitionOptions]):
         super().__init__(model_name, **model_kwargs)
         sizes = batches(settings.max_batch_size.facial_recognition)
         self.shape_policy = ShapePolicy(dims=tuple(Shape(batch) for batch in sizes))
+        self.spec = RecognizerSpec()
+
+    def _load(self) -> ModelSession:
+        self.spec = read_spec(self.model_dir, RecognizerSpec)
+        return super()._load()
 
     def _predict(
         self,
@@ -39,16 +46,19 @@ class FaceRecognizer(InferenceModel[FaceRecognitionOptions]):
     ) -> FacialRecognitionOutput:
         if faces["boxes"].shape[0] == 0:
             return []
+        spec = self.spec
         image = np.asarray(decode_pil(inputs), dtype=np.uint8)
+        if spec.channels == "bgr":
+            image = np.ascontiguousarray(image[..., ::-1])
         landmarks = faces["landmarks"]
         sizes = runs(len(landmarks), self.session.batches)
         crops: NDArray[np.float32] | NDArray[np.uint8] = np.empty(
-            (len(landmarks), ALIGNED_SIZE, ALIGNED_SIZE, 3), dtype=np.uint8
+            (len(landmarks), spec.input_size, spec.input_size, 3), dtype=np.uint8
         )
         for crop, kps in zip(crops, landmarks):
             align_face(image, kps, crop)
         if not self.session.for_shape(Shape(sizes[0])).normalizes_input:
-            crops = normalize(crops.transpose(0, 3, 1, 2).astype(np.float32, order="C"), mean=127.5, std=127.5)
+            crops = normalize(crops.transpose(0, 3, 1, 2).astype(np.float32, order="C"), mean=spec.mean, std=spec.std)
         embeddings = self._predict_batch(crops, sizes)
         return self.postprocess(faces, embeddings)
 
