@@ -1,7 +1,7 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
 import { PeopleUsersUpsertType, PersonUserRole, mapFaces, mapPerson } from 'src/dtos/person.dto.js';
-import { AssetFileType, CacheControl, JobName, JobStatus, SourceType, SystemMetadataKey } from 'src/enum.js';
+import { AssetFileType, AssetType, CacheControl, JobName, JobStatus, SourceType, SystemMetadataKey } from 'src/enum.js';
 import { PersonService } from 'src/services/person.service.js';
 import { ImmichFileResponse } from 'src/utils/file.js';
 import { AssetFaceFactory } from 'test/factories/asset-face.factory.js';
@@ -12,6 +12,7 @@ import { PersonGroupFactory } from 'test/factories/person-group.factory.js';
 import { PersonFactory } from 'test/factories/person.factory.js';
 import { UserFactory } from 'test/factories/user.factory.js';
 import { authStub } from 'test/fixtures/auth.stub.js';
+import { probeStub } from 'test/fixtures/media.stub.js';
 import { systemConfigStub } from 'test/fixtures/system-config.stub.js';
 import {
   getAsDetectedFace,
@@ -28,6 +29,17 @@ import { ServiceMocks, makeStream, newTestService } from 'test/utils.js';
 
 const PERSON_READ_ROLES = [PersonUserRole.Read, PersonUserRole.Write, PersonUserRole.Admin];
 const PERSON_WRITE_ROLES = [PersonUserRole.Write, PersonUserRole.Admin];
+
+const getVideoForDetectedFaces = (asset: ReturnType<AssetFactory['build']>) => ({
+  ...getForDetectedFaces(asset),
+  videoStream: probeStub.videoStreamH264.videoStream,
+  format: probeStub.videoStreamH264.format,
+});
+const detectedFace = (embedding: string, x1: number, x2: number) => ({
+  boundingBox: { x1, y1: 100, x2, y2: 200 },
+  embedding,
+  score: 0.9,
+});
 
 describe(PersonService.name, () => {
   let sut: PersonService;
@@ -1079,6 +1091,124 @@ describe(PersonService.name, () => {
   });
 
   describe('handleDetectFaces', () => {
+    describe('video frame sampling', () => {
+      beforeEach(() => {
+        mocks.systemMetadata.get.mockResolvedValue({
+          machineLearning: { facialRecognition: { videoFrameInterval: 25 } },
+        });
+        mocks.media.extractVideoFrame.mockResolvedValue(Buffer.from('frame'));
+      });
+
+      it('should sample frames across the whole video and keep one face per person', async () => {
+        const asset = AssetFactory.from({ type: AssetType.Video, duration: 20_000 })
+          .file({ type: AssetFileType.Preview })
+          .exif()
+          .build();
+        const [faceId1, faceId2] = [newUuid(), newUuid()];
+        mocks.crypto.randomUUID.mockReturnValueOnce(faceId1).mockReturnValueOnce(faceId2);
+        mocks.assetJob.getForDetectFacesJob.mockResolvedValue(getVideoForDetectedFaces(asset));
+        mocks.machineLearning.detectFaces
+          .mockResolvedValueOnce({ imageHeight: 1080, imageWidth: 1920, faces: [detectedFace('[1, 0, 0]', 100, 200)] })
+          .mockResolvedValueOnce({
+            imageHeight: 1080,
+            imageWidth: 1920,
+            faces: [detectedFace('[0.9, 0.1, 0]', 100, 300)],
+          })
+          .mockResolvedValueOnce({ imageHeight: 1080, imageWidth: 1920, faces: [detectedFace('[0, 1, 0]', 500, 600)] })
+          .mockResolvedValueOnce({ imageHeight: 1080, imageWidth: 1920, faces: [] });
+
+        await expect(sut.handleDetectFaces({ id: asset.id })).resolves.toBe(JobStatus.Success);
+
+        expect(mocks.media.extractVideoFrame).toHaveBeenCalledTimes(4);
+        for (const [index, seek] of ['2.500', '7.500', '12.500', '17.500'].entries()) {
+          expect(mocks.media.extractVideoFrame).toHaveBeenNthCalledWith(
+            index + 1,
+            asset.originalPath,
+            expect.objectContaining({ inputOptions: expect.arrayContaining(['-ss', seek]) }),
+          );
+        }
+        expect(mocks.machineLearning.detectFaces).toHaveBeenCalledWith(
+          Buffer.from('frame'),
+          expect.objectContaining({ modelName: 'buffalo_l' }),
+        );
+        expect(mocks.person.refreshFaces).toHaveBeenCalledWith(
+          [
+            expect.objectContaining({ id: faceId1, boundingBoxX2: 300, frameTimestamp: 7500, imageWidth: 1920 }),
+            expect.objectContaining({ id: faceId2, boundingBoxX1: 500, frameTimestamp: 12_500, imageWidth: 1920 }),
+          ],
+          [],
+          [
+            { faceId: faceId1, embedding: '[0.9, 0.1, 0]' },
+            { faceId: faceId2, embedding: '[0, 1, 0]' },
+          ],
+        );
+      });
+
+      it('should keep an existing face detected in the same frame', async () => {
+        const asset = AssetFactory.from({ type: AssetType.Video, duration: 20_000 })
+          .face({ frameTimestamp: 7500, imageWidth: 1920, imageHeight: 1080 })
+          .file({ type: AssetFileType.Preview })
+          .exif()
+          .build();
+        mocks.assetJob.getForDetectFacesJob.mockResolvedValue(getVideoForDetectedFaces(asset));
+        mocks.machineLearning.detectFaces
+          .mockResolvedValue({ imageHeight: 1080, imageWidth: 1920, faces: [] })
+          .mockResolvedValueOnce({ imageHeight: 1080, imageWidth: 1920, faces: [] })
+          .mockResolvedValueOnce({ imageHeight: 1080, imageWidth: 1920, faces: [detectedFace('[1, 0, 0]', 100, 200)] });
+
+        await sut.handleDetectFaces({ id: asset.id });
+
+        expect(mocks.person.refreshFaces).not.toHaveBeenCalled();
+        expect(mocks.job.queueAll).not.toHaveBeenCalled();
+      });
+
+      it('should skip frames that cannot be extracted', async () => {
+        const asset = AssetFactory.from({ type: AssetType.Video, duration: 20_000 })
+          .file({ type: AssetFileType.Preview })
+          .exif()
+          .build();
+        mocks.assetJob.getForDetectFacesJob.mockResolvedValue(getVideoForDetectedFaces(asset));
+        mocks.media.extractVideoFrame.mockRejectedValueOnce(new Error('ffmpeg failed'));
+        mocks.machineLearning.detectFaces.mockResolvedValue({ imageHeight: 1080, imageWidth: 1920, faces: [] });
+
+        await expect(sut.handleDetectFaces({ id: asset.id })).resolves.toBe(JobStatus.Success);
+
+        expect(mocks.media.extractVideoFrame).toHaveBeenCalledTimes(4);
+        expect(mocks.machineLearning.detectFaces).toHaveBeenCalledTimes(3);
+      });
+
+      it('should use the preview if frame sampling is disabled', async () => {
+        mocks.systemMetadata.get.mockResolvedValue({
+          machineLearning: { facialRecognition: { videoFrameInterval: 0 } },
+        });
+        const asset = AssetFactory.from({ type: AssetType.Video, duration: 20_000 })
+          .file({ type: AssetFileType.Preview })
+          .exif()
+          .build();
+        mocks.assetJob.getForDetectFacesJob.mockResolvedValue(getVideoForDetectedFaces(asset));
+        mocks.machineLearning.detectFaces.mockResolvedValue({ imageHeight: 500, imageWidth: 400, faces: [] });
+
+        await sut.handleDetectFaces({ id: asset.id });
+
+        expect(mocks.media.extractVideoFrame).not.toHaveBeenCalled();
+        expect(mocks.machineLearning.detectFaces).toHaveBeenCalledWith(asset.files[0].path, expect.anything());
+      });
+
+      it('should use the preview if the video metadata is missing', async () => {
+        const asset = AssetFactory.from({ type: AssetType.Video, duration: 20_000 })
+          .file({ type: AssetFileType.Preview })
+          .exif()
+          .build();
+        mocks.assetJob.getForDetectFacesJob.mockResolvedValue(getForDetectedFaces(asset));
+        mocks.machineLearning.detectFaces.mockResolvedValue({ imageHeight: 500, imageWidth: 400, faces: [] });
+
+        await sut.handleDetectFaces({ id: asset.id });
+
+        expect(mocks.media.extractVideoFrame).not.toHaveBeenCalled();
+        expect(mocks.machineLearning.detectFaces).toHaveBeenCalledWith(asset.files[0].path, expect.anything());
+      });
+    });
+
     it('should skip if machine learning is disabled', async () => {
       mocks.systemMetadata.get.mockResolvedValue(systemConfigStub.machineLearningDisabled);
 
@@ -1617,6 +1747,7 @@ describe(PersonService.name, () => {
         id: face.id,
         imageHeight: 500,
         imageWidth: 400,
+        frameTimestamp: null,
         sourceType: SourceType.MachineLearning,
         person: mapPerson(person),
       });

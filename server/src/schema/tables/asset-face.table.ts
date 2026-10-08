@@ -72,6 +72,10 @@ export class AssetFaceTable {
   @Column({ default: 0, type: 'integer' })
   boundingBoxY2!: Generated<number>;
 
+  // milliseconds into the video of the frame this face was detected in, null if detected in the preview
+  @Column({ type: 'integer', nullable: true })
+  frameTimestamp!: number | null;
+
   @Column({ default: SourceType.MachineLearning, enum: asset_face_source_type })
   sourceType!: Generated<SourceType>;
 

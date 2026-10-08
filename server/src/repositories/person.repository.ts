@@ -23,7 +23,15 @@ import { AssetFaceTable } from 'src/schema/tables/asset-face.table.js';
 import { FaceSearchTable } from 'src/schema/tables/face-search.table.js';
 import { PersonGroupTable } from 'src/schema/tables/person-group.table.js';
 import { PersonTable } from 'src/schema/tables/person.table.js';
-import { anyUuid, dummy, inSharedAlbum, removeUndefinedKeys, withFilePath } from 'src/utils/database.js';
+import {
+  anyUuid,
+  dummy,
+  inSharedAlbum,
+  removeUndefinedKeys,
+  withFilePath,
+  withVideoFormat,
+  withVideoStream,
+} from 'src/utils/database.js';
 import { isLeapDayObserved } from 'src/utils/date.js';
 import { type PaginationOptions, paginationHelper } from 'src/utils/pagination.js';
 
@@ -603,11 +611,15 @@ export class PersonRepository {
         'asset_face.boundingBoxY2 as y2',
         'asset_face.imageWidth as oldWidth',
         'asset_face.imageHeight as oldHeight',
+        'asset_face.frameTimestamp',
         'asset.type',
         'asset.originalPath',
         'asset_exif.orientation as exifOrientation',
       ])
       .select((eb) => withFilePath(eb, AssetFileType.Preview).as('previewPath'))
+      .leftJoin('asset_video', 'asset_video.assetId', 'asset.id')
+      .select((eb) => withVideoStream(eb).as('videoStream'))
+      .select((eb) => withVideoFormat(eb).as('format'))
       .where('person.ownerId', '=', ownerId)
       .where('person.personGroupId', '=', personGroupId)
       .where('asset_face.deletedAt', 'is', null)

@@ -34,6 +34,12 @@ It can be found from the app bar when you access the detail view of a person.
 
 Face detection sends the generated preview image to the machine learning service for processing. The service checks if it has the relevant model downloaded and downloads it if not. The image is decoded, pre-processed and passed to the face detection model (with hardware acceleration if configured). The bounding boxes and scores outputted from this model are used to crop and preprocess the image once again to be passed to a facial recognition model (also accelerated if configured). The embeddings from the recognition model, together with the bounding boxes and scores from the face detection model, are then sent back to the server to be added to the database. The embeddings in particular are indexed so they can be searched quickly during facial recognition clustering.
 
+### Videos
+
+By default, faces in a video are only detected in its preview image, which is taken from the beginning of the video. When _Video frame interval_ is set, the whole video is split into equally sized sections of at most that percentage of its duration, and a frame from the middle of each section is analyzed instead. For example, a value of 10 analyzes 10 frames spread evenly across the video, no matter how long it is.
+
+The same person usually appears in many of these frames, so only one face is kept per person and video: the frames are compared with each other using the _Maximum recognition distance_, and the largest, most confident face of each person is stored together with the position of its frame. This keeps a single video from creating many faces of the same person, which would otherwise satisfy _Minimum recognized faces_ on its own.
+
 ## How Facial Recognition Works
 
 The facial recognition algorithm we use is derived from [DBSCAN](https://www.youtube.com/watch?v=RDZUdRSDOok), a popular clustering algorithm. It essentially treats each detected face as a point in a graph and aims to group points that are close to each other.
@@ -92,3 +98,9 @@ The distance threshold described in How Facial Recognition Works. The default wo
 The core point threshold described in How Facial Recognition Works. This setting has a few implications. First, it takes effect immediately in that people with fewer faces than this are hidden from view. Secondly, it makes clustering more robust as it prevents loosely-related faces from being linked to each other by requiring a certain level of density.
 
 Increasing this setting is a good idea if you increase the recognition distance or reduce the minimum detection score. Setting it to 1 effectively disables the concept of core points, but can be an option if you prefer a more hands-on approach.
+
+### Video frame interval
+
+The distance between the frames analyzed in a video, as a percentage of its duration (see Videos in How Face Detection Works). The default of 0 only uses the video preview. Lower values find more faces at the cost of a longer face detection job: each frame is decoded and sent to the machine learning service separately, so a value of 5 means 20 times the work of the preview for every video.
+
+After changing this setting, it will only apply to new face detection jobs. To apply the new setting to all videos, you need to re-run face detection for all assets.

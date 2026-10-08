@@ -271,6 +271,7 @@ export type AssetFace = {
   boundingBoxY2: number;
   imageHeight: number;
   imageWidth: number;
+  frameTimestamp: number | null;
   personGroupId: string | null;
   sourceType: SourceType;
   person?: ShallowDehydrateObject<Person> | null;

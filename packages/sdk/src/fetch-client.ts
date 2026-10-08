@@ -228,6 +228,8 @@ export type AdminConfigFacialRecognitionDto = {
     minScore: number;
     /** Name of the model to use */
     modelName: string;
+    /** Distance between sampled video frames for face detection, as a percentage of the video duration (0 = only use the preview frame) */
+    videoFrameInterval: number;
 };
 export type AdminConfigOcrDto = {
     /** Whether the task is enabled */
@@ -1708,6 +1710,8 @@ export type AssetFaceResponseDto = {
     boundingBoxY1: number;
     /** Bounding box Y2 coordinate */
     boundingBoxY2: number;
+    /** Position in milliseconds of the video frame the face was detected in */
+    frameTimestamp?: number | null;
     /** Face ID */
     id: string;
     /** Image height in pixels */

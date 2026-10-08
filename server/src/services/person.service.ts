@@ -1,10 +1,11 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Insertable } from 'kysely';
 import { isUndefined, omitBy } from 'lodash-es';
-import type { JobItem, JobOf } from 'src/types.js';
+import type { JobItem, JobOf, VideoFormat, VideoStreamInfo } from 'src/types.js';
 import { Chunked, OnJob } from 'src/decorators.js';
 import { BulkIdErrorReason, BulkIdResponseDto } from 'src/dtos/asset-ids.response.dto.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
+import { SystemConfig } from 'src/dtos/config.dto.js';
 import {
   AssetFaceCreateDto,
   AssetFaceDeleteDto,
@@ -30,6 +31,7 @@ import {
   mapPersonUsers,
 } from 'src/dtos/person.dto.js';
 import {
+  AssetType,
   AssetVisibility,
   CacheControl,
   JobName,
@@ -41,7 +43,7 @@ import {
   SystemMetadataKey,
   VectorIndex,
 } from 'src/enum.js';
-import { BoundingBox } from 'src/repositories/machine-learning.repository.js';
+import { BoundingBox, Face } from 'src/repositories/machine-learning.repository.js';
 import { PersonId } from 'src/repositories/person.repository.js';
 import { DB } from 'src/schema/index.js';
 import { AssetFaceTable } from 'src/schema/tables/asset-face.table.js';
@@ -51,9 +53,12 @@ import { BaseService } from 'src/services/base.service.js';
 import { getDimensions, getMyPartnerIds } from 'src/utils/asset.util.js';
 import { ImmichFileResponse } from 'src/utils/file.js';
 import { isHttpException } from 'src/utils/logger.js';
+import { VideoFrameConfig, getVideoFrameTimestamps } from 'src/utils/media.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
 import { batched, findOrFail, hasSomeDefined, isFacialRecognitionEnabled } from 'src/utils/misc.js';
 import { Point, transformPoints } from 'src/utils/transform.js';
+
+type DetectedFace = Face & { imageWidth: number; imageHeight: number; frameTimestamp: number | null };
 
 const personKey = ({ ownerId, personGroupId }: PersonId) => `${ownerId}/${personGroupId}`;
 
@@ -396,7 +401,8 @@ export class PersonService extends BaseService {
 
   @OnJob({ name: JobName.AssetDetectFaces, queue: QueueName.FaceDetection })
   async handleDetectFaces({ id }: JobOf<JobName.AssetDetectFaces>): Promise<JobStatus> {
-    const { machineLearning } = await this.getConfig({ withCache: true });
+    const config = await this.getConfig({ withCache: true });
+    const { machineLearning } = config;
     if (!isFacialRecognitionEnabled(machineLearning)) {
       return JobStatus.Skipped;
     }
@@ -411,11 +417,16 @@ export class PersonService extends BaseService {
       return JobStatus.Skipped;
     }
 
-    const { imageHeight, imageWidth, faces } = await this.machineLearningRepository.detectFaces(
-      previewFile.path,
-      machineLearning.facialRecognition,
-    );
-    this.logger.debug(`${faces.length} faces detected in ${previewFile.path}`);
+    const { videoStream } = asset;
+    const timestamps =
+      asset.type === AssetType.Video && videoStream && asset.duration
+        ? getVideoFrameTimestamps(asset.duration, machineLearning.facialRecognition.videoFrameInterval)
+        : [];
+
+    const faces =
+      videoStream && timestamps.length > 0
+        ? await this.detectVideoFrameFaces({ ...asset, videoStream }, timestamps, config)
+        : await this.detectPreviewFaces(previewFile.path, machineLearning.facialRecognition);
 
     const facesToAdd: (Insertable<AssetFaceTable> & { id: string })[] = [];
     const embeddings: FaceSearchTable[] = [];
@@ -427,16 +438,22 @@ export class PersonService extends BaseService {
       }
     }
 
-    const heightScale = imageHeight / (asset.faces[0]?.imageHeight || 1);
-    const widthScale = imageWidth / (asset.faces[0]?.imageWidth || 1);
-    for (const { boundingBox, embedding } of faces) {
-      const scaledBox = {
-        x1: boundingBox.x1 * widthScale,
-        y1: boundingBox.y1 * heightScale,
-        x2: boundingBox.x2 * widthScale,
-        y2: boundingBox.y2 * heightScale,
-      };
-      const match = asset.faces.find((face) => this.iou(face, scaledBox) > 0.5);
+    for (const { boundingBox, embedding, imageWidth, imageHeight, frameTimestamp } of faces) {
+      const match = asset.faces.find((face) => {
+        if ((face.frameTimestamp ?? null) !== frameTimestamp) {
+          return false;
+        }
+
+        const widthScale = imageWidth / (face.imageWidth || 1);
+        const heightScale = imageHeight / (face.imageHeight || 1);
+        const scaledBox = {
+          x1: boundingBox.x1 / widthScale,
+          y1: boundingBox.y1 / heightScale,
+          x2: boundingBox.x2 / widthScale,
+          y2: boundingBox.y2 / heightScale,
+        };
+        return this.iou(face, scaledBox) > 0.5;
+      });
 
       if (match && !mlFaceIds.delete(match.id)) {
         embeddings.push({ faceId: match.id, embedding });
@@ -451,6 +468,7 @@ export class PersonService extends BaseService {
           boundingBoxY1: boundingBox.y1,
           boundingBoxX2: boundingBox.x2,
           boundingBoxY2: boundingBox.y2,
+          frameTimestamp,
         });
         embeddings.push({ faceId, embedding });
       }
@@ -476,6 +494,79 @@ export class PersonService extends BaseService {
     await this.assetRepository.upsertJobStatus({ assetId: asset.id, facesRecognizedAt: new Date() });
 
     return JobStatus.Success;
+  }
+
+  private async detectPreviewFaces(
+    previewPath: string,
+    options: SystemConfig['machineLearning']['facialRecognition'],
+  ): Promise<DetectedFace[]> {
+    const { imageHeight, imageWidth, faces } = await this.machineLearningRepository.detectFaces(previewPath, options);
+    this.logger.debug(`${faces.length} faces detected in ${previewPath}`);
+    return faces.map((face) => ({ ...face, imageWidth, imageHeight, frameTimestamp: null }));
+  }
+
+  private async detectVideoFrameFaces(
+    asset: { id: string; originalPath: string; videoStream: VideoStreamInfo; format: VideoFormat | null },
+    timestamps: number[],
+    { ffmpeg, image, machineLearning }: SystemConfig,
+  ): Promise<DetectedFace[]> {
+    const frameConfig = VideoFrameConfig.create({ ...ffmpeg, targetResolution: image.preview.size.toString() });
+    const faces: DetectedFace[] = [];
+    for (const timestamp of timestamps) {
+      const command = frameConfig.getFrameCommand(asset.videoStream, timestamp, asset.format ?? undefined);
+      try {
+        const frame = await this.mediaRepository.extractVideoFrame(asset.originalPath, command);
+        const result = await this.machineLearningRepository.detectFaces(frame, machineLearning.facialRecognition);
+        const { imageHeight, imageWidth } = result;
+        faces.push(...result.faces.map((face) => ({ ...face, imageWidth, imageHeight, frameTimestamp: timestamp })));
+      } catch (error: Error | unknown) {
+        this.logger.warn(`Skipping frame at ${timestamp}ms of asset ${asset.id}: ${error}`);
+      }
+    }
+
+    const representatives = this.groupVideoFaces(faces, machineLearning.facialRecognition.maxDistance);
+    this.logger.debug(
+      `${faces.length} faces detected in ${timestamps.length} frames of asset ${asset.id}, ` +
+        `keeping ${representatives.length} distinct faces`,
+    );
+    return representatives;
+  }
+
+  /**
+   * The same person usually appears in many frames of a video. Only the best face of each person is kept,
+   * so a single video does not create a large number of faces and alone satisfy `minFaces` for clustering.
+   */
+  private groupVideoFaces(faces: DetectedFace[], maxDistance: number): DetectedFace[] {
+    const quality = ({ boundingBox: { x1, y1, x2, y2 }, score }: DetectedFace) => (x2 - x1) * (y2 - y1) * score;
+    const groups: { representative: DetectedFace; embeddings: number[][] }[] = [];
+
+    for (const face of faces.toSorted((a, b) => quality(b) - quality(a))) {
+      const embedding = JSON.parse(face.embedding) as number[];
+      const group = groups.find(({ embeddings }) =>
+        embeddings.some((other) => this.cosineDistance(embedding, other) <= maxDistance),
+      );
+
+      if (group) {
+        group.embeddings.push(embedding);
+      } else {
+        groups.push({ representative: face, embeddings: [embedding] });
+      }
+    }
+
+    return groups.map(({ representative }) => representative);
+  }
+
+  private cosineDistance(a: number[], b: number[]): number {
+    let dot = 0;
+    let normA = 0;
+    let normB = 0;
+    for (const [i, value] of a.entries()) {
+      dot += value * b[i];
+      normA += value * value;
+      normB += b[i] * b[i];
+    }
+
+    return 1 - dot / (Math.sqrt(normA * normB) || 1);
   }
 
   private iou(

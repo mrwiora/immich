@@ -1640,6 +1640,42 @@ describe(MediaService.name, () => {
       });
     });
 
+    it('should extract the frame the face was detected in if video', async () => {
+      const person = PersonFactory.create();
+      const frame = Buffer.from('frame');
+
+      mocks.person.getDataForThumbnailGenerationJob.mockResolvedValue(personThumbnailStub.videoFrameThumbnail);
+      mocks.media.extractVideoFrame.mockResolvedValue(frame);
+      mocks.media.generateThumbnail.mockResolvedValue();
+      const data = Buffer.from('');
+      const info = { width: 1000, height: 1000 } as OutputInfo;
+      mocks.media.decodeImage.mockResolvedValue({ data, info });
+
+      await expect(
+        sut.handleGeneratePersonThumbnail({ ownerId: person.ownerId, personGroupId: person.personGroupId }),
+      ).resolves.toBe(JobStatus.Success);
+
+      expect(mocks.media.extractVideoFrame).toHaveBeenCalledWith(
+        '/original/path.mp4',
+        expect.objectContaining({
+          inputOptions: expect.arrayContaining(['-ss', '12.345']),
+          outputOptions: expect.arrayContaining(['-frames:v', '1', '-f', 'image2pipe']),
+        }),
+      );
+      expect(mocks.media.decodeImage).toHaveBeenCalledWith(frame, {
+        colorspace: Colorspace.P3,
+        orientation: undefined,
+        processInvalidImages: false,
+      });
+      expect(mocks.media.generateThumbnail).toHaveBeenCalledWith(
+        { data, info },
+        expect.objectContaining({
+          edits: [{ action: 'crop', parameters: { height: 274, width: 274, x: 238, y: 163 } }],
+        }),
+        expect.any(String),
+      );
+    });
+
     it('should generate a thumbnail without going negative', async () => {
       const person = PersonFactory.create();
 
