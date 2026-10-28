@@ -59,10 +59,11 @@ describe(PersonService.name, () => {
       const [person, hiddenPerson] = [PersonFactory.create(), PersonFactory.create({ isHidden: true })];
 
       mocks.person.getAllForUser.mockResolvedValue({
-        items: [getDehydrated(person), getDehydrated(hiddenPerson)],
+        items: [getDehydrated({ ...person, faceCount: 3 }), getDehydrated({ ...hiddenPerson, faceCount: 3 })],
         hasNextPage: false,
+        total: 2,
+        hidden: 1,
       });
-      mocks.person.getNumberOfPeople.mockResolvedValue({ total: 2, hidden: 1 });
       mocks.partner.getAll.mockResolvedValue([]);
       await expect(sut.getAll(auth, { withHidden: true, page: 1, size: 10 })).resolves.toEqual({
         hasNextPage: false,
@@ -87,10 +88,11 @@ describe(PersonService.name, () => {
       const [isFavorite, person] = [PersonFactory.create({ isFavorite: true }), PersonFactory.create()];
 
       mocks.person.getAllForUser.mockResolvedValue({
-        items: [getDehydrated(isFavorite), getDehydrated(person)],
+        items: [getDehydrated({ ...isFavorite, faceCount: 3 }), getDehydrated({ ...person, faceCount: 3 })],
         hasNextPage: false,
+        total: 2,
+        hidden: 1,
       });
-      mocks.person.getNumberOfPeople.mockResolvedValue({ total: 2, hidden: 1 });
       mocks.partner.getAll.mockResolvedValue([]);
       await expect(sut.getAll(auth, { withHidden: false, page: 1, size: 10 })).resolves.toEqual({
         hasNextPage: false,
@@ -109,13 +111,32 @@ describe(PersonService.name, () => {
         partnerIds: [],
       });
     });
+
+    it('should pass the closest person to the query', async () => {
+      const auth = AuthFactory.create();
+      const closestPersonId = newUuid();
+
+      mocks.person.getAllForUser.mockResolvedValue({ items: [], hasNextPage: false, total: 0, hidden: 0 });
+      mocks.partner.getAll.mockResolvedValue([]);
+      await expect(sut.getAll(auth, { closestPersonId, page: 1, size: 10 })).resolves.toEqual({
+        people: [],
+        hasNextPage: false,
+        total: 0,
+        hidden: 0,
+      });
+      expect(mocks.person.getAllForUser).toHaveBeenCalledWith({ skip: 0, take: 10 }, auth.user.id, {
+        withHidden: false,
+        partnerIds: [],
+        closestPersonId,
+      });
+    });
   });
 
   describe('getById', () => {
     it('should require person.read permission', async () => {
       const auth = AuthFactory.create();
       const person = PersonFactory.create();
-      mocks.person.getForUser.mockResolvedValue(getDehydrated(person));
+      mocks.person.getByGroupId.mockResolvedValue(person);
       await expect(sut.getById(auth, person.personGroupId)).rejects.toBeInstanceOf(BadRequestException);
       expect(mocks.access.person.checkAccess).toHaveBeenCalledWith(
         auth.user.id,
@@ -139,12 +160,12 @@ describe(PersonService.name, () => {
       const ids = [{ personGroupId: person.personGroupId, ownerId: auth.user.id }];
 
       mocks.access.person.checkAccess.mockResolvedValue(new Set(ids));
-      mocks.person.getForUser.mockResolvedValue(getDehydrated(person));
+      mocks.person.getByGroupId.mockResolvedValue(person);
       await expect(sut.getById(auth, person.personGroupId)).resolves.toEqual(
         expect.objectContaining({ id: person.personGroupId }),
       );
-      expect(mocks.person.getForUser).toHaveBeenCalledWith({
-        userId: auth.user.id,
+      expect(mocks.person.getByGroupId).toHaveBeenCalledWith({
+        ownerId: auth.user.id,
         personGroupId: person.personGroupId,
       });
       expect(mocks.access.person.checkAccess).toHaveBeenCalledWith(auth.user.id, new Set(ids), PERSON_READ_ROLES);
@@ -910,7 +931,6 @@ describe(PersonService.name, () => {
       mocks.job.getJobCounts.mockResolvedValue({
         active: 1,
         waiting: 0,
-        paused: 0,
         completed: 0,
         failed: 0,
         delayed: 0,
@@ -927,7 +947,6 @@ describe(PersonService.name, () => {
       mocks.job.getJobCounts.mockResolvedValue({
         active: 1,
         waiting: 1,
-        paused: 0,
         completed: 0,
         failed: 0,
         delayed: 0,
@@ -943,7 +962,6 @@ describe(PersonService.name, () => {
       mocks.job.getJobCounts.mockResolvedValue({
         active: 1,
         waiting: 0,
-        paused: 0,
         completed: 0,
         failed: 0,
         delayed: 0,
@@ -974,7 +992,6 @@ describe(PersonService.name, () => {
       mocks.job.getJobCounts.mockResolvedValue({
         active: 1,
         waiting: 0,
-        paused: 0,
         completed: 0,
         failed: 0,
         delayed: 0,
@@ -1006,7 +1023,6 @@ describe(PersonService.name, () => {
       mocks.job.getJobCounts.mockResolvedValue({
         active: 1,
         waiting: 0,
-        paused: 0,
         completed: 0,
         failed: 0,
         delayed: 0,
@@ -1061,7 +1077,6 @@ describe(PersonService.name, () => {
       mocks.job.getJobCounts.mockResolvedValue({
         active: 1,
         waiting: 0,
-        paused: 0,
         completed: 0,
         failed: 0,
         delayed: 0,
@@ -1621,7 +1636,7 @@ describe(PersonService.name, () => {
       expect(mocks.access.person.checkAccess).toHaveBeenCalledWith(auth.user.id, new Set(ids), PERSON_READ_ROLES);
     });
 
-    it('should only include partners that are shown in the timeline', async () => {
+    it('should include all partners that are shown in the timeline', async () => {
       const auth = AuthFactory.create();
       const person = PersonFactory.create();
       const ids = [{ personGroupId: person.personGroupId, ownerId: auth.user.id }];
@@ -1637,7 +1652,7 @@ describe(PersonService.name, () => {
       await expect(sut.getStatistics(auth, person.personGroupId)).resolves.toEqual({ assets: 3 });
       expect(mocks.person.getStatistics).toHaveBeenCalledWith(person.personGroupId, {
         ownerId: auth.user.id,
-        partnerIds: [inTimeline.id],
+        partnerIds: [inTimeline.id, notInTimeline.id],
       });
     });
 
