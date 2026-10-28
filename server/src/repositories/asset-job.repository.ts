@@ -233,7 +233,7 @@ export class AssetJobRepository {
   getForDetectFacesJob(id: string) {
     return this.db
       .selectFrom('asset')
-      .select(['asset.id', 'asset.visibility'])
+      .select(['asset.id', 'asset.visibility', 'asset.type', 'asset.originalPath', 'asset.duration'])
       .$call(withExifInner)
       .select((eb) => withFaces(eb, true, true))
       .select((eb) =>
@@ -247,6 +247,9 @@ export class AssetJobRepository {
             .limit(sql.lit(1)),
         ).as('previewFile'),
       )
+      .leftJoin('asset_video', 'asset_video.assetId', 'asset.id')
+      .select((eb) => withVideoStream(eb).as('videoStream'))
+      .select((eb) => withVideoFormat(eb).as('format'))
       .where('asset.id', '=', id)
       .executeTakeFirst();
   }

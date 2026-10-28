@@ -20,6 +20,7 @@ export const newMediaRepositoryMock = (): Mocked<RepositoryInterface<MediaReposi
       keyframeOwnDuration: [],
     }),
     transcode: vitest.fn(),
+    extractVideoFrame: vitest.fn(),
     getImageMetadata: vitest.fn(),
   };
 };
